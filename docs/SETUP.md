@@ -36,7 +36,265 @@ git --version
 
 ---
 
-## 🚀 Part 1: Azure Infrastructure Setup (One-Time)
+## � Part 0: Get GitHub Secrets (Do This First!)
+
+Before deploying, you need to setup GitHub secrets. Follow these commands to get all required credentials.
+
+### Step 1: Login to Azure
+
+```powershell
+# Login to Azure CLI
+az login
+# Opens browser - sign in with abhimausm2@gmail.com
+
+# Verify you're logged in
+az account show
+
+# Note your subscription ID (you'll need this)
+az account show --query id -o tsv
+```
+
+**Copy the subscription ID** - you'll use it in the next steps.
+
+---
+
+### Step 2: Create Service Principal for GitHub Actions
+
+This allows GitHub Actions to create and manage Azure resources on your behalf.
+
+```powershell
+# Get your subscription ID
+$SUBSCRIPTION_ID = az account show --query id -o tsv
+Write-Host "Subscription ID: $SUBSCRIPTION_ID"
+
+# Create service principal with Contributor role
+az ad sp create-for-rbac `
+  --name "github-actions-azureai" `
+  --role "Contributor" `
+  --scopes "/subscriptions/$SUBSCRIPTION_ID" `
+  --sdk-auth
+
+# The command above will output JSON like this:
+# {
+#   "clientId": "xxx",
+#   "clientSecret": "xxx",
+#   "subscriptionId": "xxx",
+#   "tenantId": "xxx",
+#   ...
+# }
+
+# ⚠️ IMPORTANT: Copy the ENTIRE JSON output
+```
+
+**Save this JSON** - you'll add it as `AZURE_CREDENTIALS` secret in GitHub.
+
+---
+
+### Step 3: Choose a SQL Password
+
+Create a strong password for Azure SQL Server:
+
+**Requirements:**
+- Minimum 12 characters
+- Mix of uppercase, lowercase, numbers, and symbols
+- Example: `MySecureP@ssw0rd2024!`
+
+**Save this password** - you'll add it as `AZURE_SQL_PASSWORD` secret in GitHub.
+
+---
+
+### Step 4: Add Secrets to GitHub
+
+Now go to your GitHub repository secrets:
+
+**URL:** `https://github.com/abhimasum/AzureCloudAi/settings/secrets/actions`
+
+Click **"New repository secret"** and add:
+
+1. **Secret Name:** `AZURE_CREDENTIALS`  
+   **Value:** Paste the entire JSON from Step 2
+
+2. **Secret Name:** `AZURE_SQL_PASSWORD`  
+   **Value:** Your chosen SQL password from Step 3
+
+---
+
+### Step 5: Verify Service Principal Permissions
+
+```powershell
+# Get the service principal ID
+$SP_APP_ID = (az ad sp list --display-name "github-actions-azureai" --query "[0].appId" -o tsv)
+Write-Host "Service Principal App ID: $SP_APP_ID"
+
+# Verify it has Contributor role
+az role assignment list --assignee $SP_APP_ID --query "[].{Role:roleDefinitionName, Scope:scope}" -o table
+
+# You should see "Contributor" role on your subscription
+```
+
+---
+
+### Step 6: Trigger First Deployment
+
+With secrets configured, trigger the deployment:
+
+**Option 1: Via Git Push**
+```powershell
+# Add a comment or small change to trigger deployment
+git commit --allow-empty -m "Trigger Azure deployment"
+git push origin master
+```
+
+**Option 2: Via GitHub Actions UI**
+1. Go to: `https://github.com/abhimasum/AzureCloudAi/actions`
+2. Select "Deploy Azure MAF Agents" workflow
+3. Click "Run workflow"
+4. Choose branch: `master`
+5. Click "Run workflow"
+
+**Monitor deployment:**
+- Watch the workflow run at: `https://github.com/abhimasum/AzureCloudAi/actions`
+- First deployment takes ~10-15 minutes (creates all resources)
+- Subsequent deployments take ~5-8 minutes (updates only)
+
+---
+
+### Step 7: Get Your Deployment URL
+
+After deployment completes, get your application URL:
+
+```powershell
+# Login to Azure (if not already)
+az login
+
+# Get orchestrator URL (main application)
+az containerapp show `
+  --name orchestrator `
+  --resource-group azure-ai-agents `
+  --query properties.configuration.ingress.fqdn -o tsv
+
+# Output will be something like:
+# orchestrator--xxx.eastus.azurecontainerapps.io
+
+# Open in browser
+# https://orchestrator--xxx.eastus.azurecontainerapps.io
+```
+
+**Test queries:**
+- "List all Indian states"
+- "What is the capital of Maharashtra?"
+- "Tell me about India"
+- "What is the culture of Maharashtra?"
+
+---
+
+### Step 8: (Optional) Get Credentials for Local Development
+
+If you want to run agents locally, get the auto-created credentials:
+
+```powershell
+# Get Azure OpenAI credentials
+$OPENAI_NAME = "ai-agents-openai"
+$OPENAI_ENDPOINT = az cognitiveservices account show `
+  --name $OPENAI_NAME `
+  --resource-group azure-ai-agents `
+  --query properties.endpoint -o tsv
+
+$OPENAI_KEY = az cognitiveservices account keys list `
+  --name $OPENAI_NAME `
+  --resource-group azure-ai-agents `
+  --query key1 -o tsv
+
+Write-Host "Azure OpenAI Endpoint: $OPENAI_ENDPOINT"
+Write-Host "Azure OpenAI Key: $OPENAI_KEY"
+
+# Get AI Search credentials
+$SEARCH_NAME = "ai-agents-search"
+$SEARCH_ENDPOINT = "https://$SEARCH_NAME.search.windows.net"
+$SEARCH_KEY = az search admin-key show `
+  --resource-group azure-ai-agents `
+  --service-name $SEARCH_NAME `
+  --query primaryKey -o tsv
+
+Write-Host "Azure Search Endpoint: $SEARCH_ENDPOINT"
+Write-Host "Azure Search Key: $SEARCH_KEY"
+
+# Get SQL Server name
+$SQL_SERVER = az sql server list `
+  --resource-group azure-ai-agents `
+  --query "[0].name" -o tsv
+
+Write-Host "SQL Server: $SQL_SERVER.database.windows.net"
+
+# Get Storage connection string
+$STORAGE_NAME = az storage account list `
+  --resource-group azure-ai-agents `
+  --query "[0].name" -o tsv
+
+$STORAGE_CONN = az storage account show-connection-string `
+  --name $STORAGE_NAME `
+  --resource-group azure-ai-agents `
+  --query connectionString -o tsv
+
+Write-Host "Storage Connection: $STORAGE_CONN"
+```
+
+**Copy these to `.env` file for local development:**
+
+```env
+# Azure OpenAI
+AZURE_OPENAI_ENDPOINT=<from above>
+AZURE_OPENAI_API_KEY=<from above>
+AZURE_OPENAI_DEPLOYMENT=gpt-4o
+AZURE_OPENAI_API_VERSION=2024-08-01-preview
+
+# Azure AI Search
+AZURE_SEARCH_ENDPOINT=<from above>
+AZURE_SEARCH_KEY=<from above>
+AZURE_SEARCH_INDEX=documents
+
+# Azure SQL
+AZURE_SQL_SERVER=<from above>
+AZURE_SQL_DATABASE=geography_index
+AZURE_SQL_USERNAME=sqladmin
+AZURE_SQL_PASSWORD=<your password from Step 3>
+
+# Azure Storage
+AZURE_STORAGE_CONNECTION_STRING=<from above>
+AZURE_STORAGE_CONTAINER=documents
+```
+
+---
+
+## 📊 Summary: What You've Accomplished
+
+✅ **Created service principal** for GitHub Actions  
+✅ **Added GitHub secrets** (AZURE_CREDENTIALS, AZURE_SQL_PASSWORD)  
+✅ **Triggered deployment** - Pipeline created all Azure resources  
+✅ **Got application URL** - Your multi-agent system is live!  
+✅ **Retrieved credentials** - Ready for local development (optional)  
+
+**Azure Resources Created:**
+- Resource Group: `azure-ai-agents`
+- Azure SQL Database with 36 states/UTs
+- Azure OpenAI (GPT-4o deployment)
+- Azure AI Search (vector search index)
+- Azure Blob Storage (document container)
+- Azure Container Registry (Docker images)
+- Container Apps Environment
+- 2 Container Apps: orchestrator, retriever
+
+**Total Cost:** ~$100-150/month for dev/test usage
+
+---
+
+## 🚀 Part 1: Manual Infrastructure Setup (Alternative to CI/CD)
+
+**Note:** If you used Part 0 (GitHub Actions deployment), you can **skip Part 1** - all resources are already created!
+
+This section is only needed if you want to manually create resources instead of using CI/CD.
+
+---
 
 ### Step 1: Run Automated Setup Script
 

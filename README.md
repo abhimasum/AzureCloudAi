@@ -39,43 +39,55 @@ User Query → Orchestrator Agent
 
 ## 🚀 Quick Start
 
-### Prerequisites
-- Azure account (abhimausm2@gmail.com)
-- Azure CLI installed
-- Python 3.11+
-- Git
+### Automated Deployment (Recommended)
 
-### 1. Setup Azure Resources
+The easiest way to deploy is via GitHub Actions - it automatically creates all Azure resources.
+
+**3 Simple Steps:**
+
+1. **Create Service Principal**
+   ```bash
+   az login
+   SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+   az ad sp create-for-rbac \
+     --name "github-actions-azureai" \
+     --role "Contributor" \
+     --scopes "/subscriptions/$SUBSCRIPTION_ID" \
+     --sdk-auth
+   # Copy the entire JSON output
+   ```
+
+2. **Add GitHub Secrets**
+   - Go to: `https://github.com/abhimasum/AzureCloudAi/settings/secrets/actions`
+   - Add `AZURE_CREDENTIALS` (JSON from step 1)
+   - Add `AZURE_SQL_PASSWORD` (choose a strong password)
+
+3. **Deploy**
+   ```bash
+   git commit --allow-empty -m "Deploy to Azure"
+   git push origin master
+   ```
+
+**That's it!** GitHub Actions will:
+- ✅ Create all Azure resources (SQL, OpenAI, AI Search, Storage, ACR, Container Apps)
+- ✅ Setup database with 36 states/UTs
+- ✅ Build and deploy all agents
+- ✅ Give you the deployment URL
+
+**See full instructions:** [docs/SETUP.md](docs/SETUP.md#-part-0-get-github-secrets-do-this-first)
+
+---
+
+### Manual Setup (Alternative)
+
+If you prefer manual control:
+
 ```bash
 # Login to Azure
 az login
 
-# Run setup script (creates all resources)
+# Run setup script
 bash infra/setup_azure.sh
-```
-
-### 2. Configure Secrets
-```bash
-# Copy credentials from setup script output
-cp .env.example .env
-# Edit .env with your Azure credentials
-```
-
-### 3. Test Locally
-```bash
-pip install -r requirements.txt
-python agents/orchestrator_agent/main.py
-```
-
-### 4. Deploy to Azure
-```bash
-# Setup GitHub secrets (one-time)
-# See docs/SETUP.md for GitHub secrets configuration
-
-# Deploy via push
-git add -A
-git commit -m "Deploy agents"
-git push origin master
 ```
 
 ---
