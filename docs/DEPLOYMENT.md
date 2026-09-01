@@ -1,406 +1,546 @@
-# Deployment Guide
+# Deployment Guide: Azure Container Apps
 
-This guide explains how to deploy and manage the multi-agent system on Google Cloud Platform.
+This guide explains how to deploy and manage the multi-agent system on **Azure Container Apps** using **GitHub Actions**.
+
+---
 
 ## 🚀 Quick Deploy
 
 ### Option 1: Automatic Deploy (Push to Master)
 
-Any push to the `master` branch that changes agent code automatically triggers deployment:
+Any push to the `master` branch automatically triggers deployment:
 
 ```bash
 git add -A
-git commit -m "Your changes"
+git commit -m "Deploy to Azure"
 git push origin master
 ```
 
-The workflow will:
-1. ✅ Clean up old resources (old images, stopped services)
-2. ✅ Setup BigQuery dataset with sample data
-3. ✅ Deploy retriever agent (RAG specialist)
-4. ✅ Deploy orchestrator agent (with embedded BigQuery agent)
-5. ✅ Deploy ingestion service
-6. ✅ Upload documents to GCS
-7. ✅ Trigger immediate corpus ingestion
+The GitHub Actions workflow will:
+1. ✅ Login to Azure using service principal
+2. ✅ Build Docker images for all agents
+3. ✅ Push images to Azure Container Registry
+4. ✅ Deploy/update Container Apps
+5. ✅ Verify deployments
+6. ✅ Run post-deployment tests
+
+**Deployment time**: ~8-12 minutes
 
 ### Option 2: Manual Deploy (GitHub Actions UI)
 
-1. Go to: https://github.com/abhimasum/GoogleCloudAi/actions
-2. Select "Deploy ADK agents" workflow
+1. Go to: https://github.com/abhimasum/AzureCloudAi/actions
+2. Select "Deploy to Azure" workflow
 3. Click "Run workflow"
-4. Choose options:
-   - **cleanup_before_deploy**: `true` to delete old services first (recommended)
+4. Choose branch: `master`
 5. Click "Run workflow"
+
+---
+
+## 📋 Prerequisites for GitHub Actions
+
+### Step 1: Setup Azure Resources
+
+Run the setup script (one-time):
+```bash
+bash infra/setup_azure.sh
+```
+
+This creates:
+- Resource Group: `azure-ai-agents`
+- Azure SQL Server + Database
+- Azure OpenAI Service
+- Azure AI Search
+- Azure Blob Storage
+- Azure Container Registry
+- Container Apps Environment
+
+### Step 2: Configure GitHub Secrets
+
+Go to: `https://github.com/abhimasum/AzureCloudAi/settings/secrets/actions`
+
+Add these secrets:
+
+| Secret Name | Value | How to Get |
+|-------------|-------|------------|
+| `AZURE_CREDENTIALS` | Service Principal JSON | `az ad sp create-for-rbac --sdk-auth` |
+| `AZURE_SUBSCRIPTION_ID` | Subscription ID | `az account show --query id -o tsv` |
+| `AZURE_RESOURCE_GROUP` | `azure-ai-agents` | From setup script |
+| `AZURE_LOCATION` | `eastus` | From setup script |
+| `ACR_LOGIN_SERVER` | `yourregistry.azurecr.io` | `az acr show --query loginServer` |
+| `ACR_USERNAME` | Registry username | `az acr credential show` |
+| `ACR_PASSWORD` | Registry password | `az acr credential show` |
+| `AZURE_SQL_CONNECTION_STRING` | SQL connection string | From `.env` file |
+| `AZURE_OPENAI_ENDPOINT` | OpenAI endpoint | From `.env` file |
+| `AZURE_OPENAI_API_KEY` | OpenAI API key | From `.env` file |
+| `AZURE_SEARCH_ENDPOINT` | AI Search endpoint | From `.env` file |
+| `AZURE_SEARCH_KEY` | AI Search key | From `.env` file |
+| `AZURE_STORAGE_CONNECTION_STRING` | Storage connection | From `.env` file |
+
+#### Create Service Principal
+
+```bash
+# Create service principal with Contributor role
+az ad sp create-for-rbac \
+  --name "github-actions-azureai" \
+  --role "Contributor" \
+  --scopes "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/azure-ai-agents" \
+  --sdk-auth
+
+# Copy entire JSON output to AZURE_CREDENTIALS secret
+```
+
+#### Get ACR Credentials
+
+```bash
+# Get ACR name
+ACR_NAME=$(az acr list --resource-group azure-ai-agents --query "[0].name" -o tsv)
+
+# Enable admin access
+az acr update --name $ACR_NAME --admin-enabled true
+
+# Get credentials
+az acr credential show --name $ACR_NAME
+
+# Copy:
+# - loginServer → ACR_LOGIN_SERVER
+# - username → ACR_USERNAME
+# - passwords[0].value → ACR_PASSWORD
+```
+
+---
+
+## 📦 What Gets Deployed
+
+### Container Apps (3 Services)
+
+1. **orchestrator**
+   - Main entry point with web UI
+   - Embeds SQL agent for geography queries
+   - Delegates to retriever via A2A protocol
+   - URL: `https://orchestrator-xxx.azurecontainerapps.io`
+   - Scaling: 0-10 instances
+
+2. **retriever**
+   - RAG specialist using Azure AI Search
+   - Exposes A2A protocol for agent-to-agent calls
+   - URL: `https://retriever-xxx.azurecontainerapps.io`
+   - Scaling: 0-5 instances
+
+3. **ingestion** (optional, scheduled)
+   - Updates AI Search index from Blob Storage
+   - Runs on-demand or scheduled
+   - Internal service (no public ingress)
+
+### Azure Container Registry
+
+- **Repository**: `yourregistry.azurecr.io`
+- **Images**: 
+  - `orchestrator:latest`
+  - `orchestrator:<git-sha>`
+  - `retriever:latest`
+  - `retriever:<git-sha>`
+  - `ingestion:latest`
+  - `ingestion:<git-sha>`
+
+### Azure SQL Database
+
+- **Database**: `geography_index`
+- **Tables**:
+  - `countries` (1 row: India)
+  - `states` (36 rows: 28 states + 8 UTs)
+  - `districts` (13 sample districts)
+
+### Azure Blob Storage
+
+- **Container**: `documents`
+- **Contents**: Markdown documents from `data/sample_docs/`
+
+### Azure AI Search
+
+- **Index**: `documents`
+- **Fields**: id, content, title, embedding
+- **Algorithm**: HNSW vector search
+
+---
+
+## 🔄 GitHub Actions Workflow
+
+### Workflow File: `.github/workflows/deploy.yml`
+
+**Triggers:**
+- Push to `master` branch
+- Manual workflow dispatch
+- Pull request to `master` (test only, no deploy)
+
+**Jobs:**
+
+1. **Build & Push Images**
+   ```yaml
+   - Login to Azure
+   - Login to ACR
+   - Build Docker images (orchestrator, retriever, ingestion)
+   - Tag with :latest and :git-sha
+   - Push to ACR
+   ```
+
+2. **Deploy Container Apps**
+   ```yaml
+   - Deploy orchestrator (with all environment variables)
+   - Deploy retriever (with Search + OpenAI config)
+   - Deploy ingestion (scheduled job)
+   - Wait for deployments to stabilize
+   ```
+
+3. **Post-Deployment Verification**
+   ```yaml
+   - Get Container App URLs
+   - Health check orchestrator endpoint
+   - Test sample query
+   - Check logs for errors
+   ```
+
+**Environment Variables Injected:**
+```yaml
+AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+AZURE_OPENAI_DEPLOYMENT: gpt-4o
+AZURE_SQL_SERVER: (from connection string)
+AZURE_SQL_DATABASE: geography_index
+AZURE_SQL_USERNAME: (from connection string)
+AZURE_SQL_PASSWORD: (from connection string)
+AZURE_SEARCH_ENDPOINT: ${{ secrets.AZURE_SEARCH_ENDPOINT }}
+AZURE_SEARCH_KEY: ${{ secrets.AZURE_SEARCH_KEY }}
+AZURE_SEARCH_INDEX: documents
+RETRIEVER_URL: https://retriever-xxx.azurecontainerapps.io
+```
+
+---
 
 ## 🧹 Cleanup Resources
 
-To save costs when not using the system:
+### Option 1: Via GitHub Actions (Recommended)
 
-### Via GitHub Actions UI
+Create `.github/workflows/cleanup.yml`:
 
-1. Go to: https://github.com/abhimasum/GoogleCloudAi/actions
+```yaml
+name: 🧹 Cleanup Resources
+
+on:
+  workflow_dispatch:
+    inputs:
+      delete_container_apps:
+        description: 'Delete Container Apps'
+        required: true
+        type: boolean
+        default: true
+      delete_acr_images:
+        description: 'Delete old ACR images'
+        required: true
+        type: boolean
+        default: true
+      delete_all:
+        description: 'Delete entire resource group'
+        required: true
+        type: boolean
+        default: false
+```
+
+**Run cleanup:**
+1. Go to: https://github.com/abhimasum/AzureCloudAi/actions
 2. Select "🧹 Cleanup Resources" workflow
 3. Click "Run workflow"
-4. Configure what to delete:
-   - **delete_storage**: Delete GCS bucket contents (`true`/`false`)
-   - **delete_docker_images**: Delete old Docker images (`true`/`false`)
-   - **delete_rag_corpus**: Delete RAG knowledge base (`true`/`false`) ⚠️
+4. Choose what to delete
 5. Click "Run workflow"
 
-**⚠️ Important:** Deleting the RAG corpus requires re-ingesting all documents on next deploy (takes ~5-10 minutes).
+### Option 2: Via Azure CLI
 
-### Via Command Line
+**Delete specific Container Apps:**
+```bash
+az containerapp delete --name orchestrator --resource-group azure-ai-agents
+az containerapp delete --name retriever --resource-group azure-ai-agents
+az containerapp delete --name ingestion --resource-group azure-ai-agents
+```
+
+**Delete old ACR images:**
+```bash
+# List images
+az acr repository list --name $ACR_NAME
+
+# Delete old tags (keep latest)
+az acr repository show-tags --name $ACR_NAME --repository orchestrator
+az acr repository delete --name $ACR_NAME --image orchestrator:old-sha --yes
+```
+
+**Delete entire resource group (⚠️ deletes EVERYTHING):**
+```bash
+az group delete --name azure-ai-agents --yes --no-wait
+```
+
+---
+
+## 🔍 Monitoring & Debugging
+
+### Get Container App URLs
 
 ```bash
-# Trigger cleanup with all options
-gh workflow run cleanup.yml \
-  -f delete_storage=true \
-  -f delete_docker_images=true \
-  -f delete_rag_corpus=false
+# Orchestrator URL (user-facing)
+az containerapp show \
+  --name orchestrator \
+  --resource-group azure-ai-agents \
+  --query properties.configuration.ingress.fqdn -o tsv
+
+# Retriever URL (A2A endpoint)
+az containerapp show \
+  --name retriever \
+  --resource-group azure-ai-agents \
+  --query properties.configuration.ingress.fqdn -o tsv
 ```
 
-## 📋 What Gets Deployed
+### View Logs
 
-### Cloud Run Services (3 total)
-
-1. **retriever-agent**
-   - RAG specialist using Vertex AI RAG Engine
-   - Exposes A2A protocol for agent-to-agent calls
-   - URL: `https://retriever-agent-<hash>-ew.a.run.app`
-
-2. **orchestrator-agent** 
-   - Main entry point with web UI
-   - Embeds BigQuery agent locally (cost-efficient)
-   - Delegates to retriever via A2A protocol
-   - URL: `https://orchestrator-agent-<hash>-ew.a.run.app`
-
-3. **ingestion**
-   - Updates RAG corpus from GCS bucket
-   - Runs on schedule (daily at 3 AM)
-   - Can be triggered manually
-   - Private service (no unauthenticated access)
-
-### BigQuery Dataset
-
-- **Dataset**: `geography_index` (europe-west4)
-- **Tables**:
-  - `countries` (1 row: India)
-  - `states` (5 rows: Maharashtra, Karnataka, Tamil Nadu, Uttar Pradesh, West Bengal)
-  - `districts` (7 rows: Mumbai, Pune, Nagpur, Bengaluru, Mysuru, Chennai, Coimbatore)
-
-### Cloud Storage
-
-- **Bucket**: `gs://agenticaigcplearn-adk-docs`
-- **Contents**: Markdown documents from `data/sample_docs/`
-
-### Artifact Registry
-
-- **Repository**: `adk-agents` (europe-west4)
-- **Images**: 
-  - `retriever-agent:latest`
-  - `orchestrator-agent:latest`
-  - `ingestion:latest`
-
-## 🔄 Deployment Workflow Details
-
-### Phase 1: Cleanup (Optional)
-
-Runs automatically on push or when manually enabled:
-
-```yaml
-cleanup-old-resources:
-  - Delete old Cloud Run services (will be recreated)
-  - Clean up old Docker images (keep last 3 versions)
-```
-
-### Phase 2: BigQuery Setup
-
-```yaml
-setup-bigquery:
-  - Install BigQuery client libraries
-  - Run setup script (creates dataset/tables)
-  - Verify table counts
-```
-
-### Phase 3: Deploy Agents
-
-```yaml
-deploy-retriever:
-  - Build Docker image
-  - Push to Artifact Registry
-  - Deploy to Cloud Run
-  - Configure PUBLIC_URL for A2A
-
-deploy-orchestrator:
-  - Build Docker image (includes bigquery_agent folder)
-  - Push to Artifact Registry
-  - Deploy to Cloud Run
-  - Pass RETRIEVER_AGENT_URL from previous step
-
-deploy-ingestion:
-  - Upload documents to GCS
-  - Build Docker image
-  - Deploy to Cloud Run
-  - Create Cloud Scheduler job
-  - Trigger immediate ingestion
-```
-
-### Phase 4: Verification
-
-Deployment summary shows:
-- ✅ All service URLs
-- ✅ Example test questions
-- ✅ Links to test the deployment
-
-## 🧪 Testing Deployment
-
-### Automated Verification
-
-The workflow automatically tests:
-```bash
-# BigQuery table counts
-bq query "SELECT COUNT(*) FROM geography_index.countries"
-bq query "SELECT COUNT(*) FROM geography_index.states"
-bq query "SELECT COUNT(*) FROM geography_index.districts"
-```
-
-### Manual Testing
-
-After deployment completes:
-
-1. **Get orchestrator URL:**
-   ```bash
-   gcloud run services describe orchestrator-agent \
-     --region=europe-west4 \
-     --format='value(status.url)'
-   ```
-
-2. **Open web UI:**
-   ```bash
-   # Copy URL from above and open in browser
-   ```
-
-3. **Test queries:**
-   - **Greeting**: "Hello" (should respond directly)
-   - **BigQuery**: "What states are in India?" (queries BigQuery)
-   - **RAG**: "Tell me about India's geography" (searches documents)
-   - **Combined**: "What is the capital of Maharashtra?" (BQ → RAG flow)
-
-### Check Logs
-
+**Real-time logs:**
 ```bash
 # Orchestrator logs
-gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=orchestrator-agent" --limit=50
+az containerapp logs show \
+  --name orchestrator \
+  --resource-group azure-ai-agents \
+  --follow
 
 # Retriever logs
-gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=retriever-agent" --limit=50
-
-# Ingestion logs
-gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=ingestion" --limit=50
+az containerapp logs show \
+  --name retriever \
+  --resource-group azure-ai-agents \
+  --follow
 ```
 
-## 💰 Cost Optimization
+**Recent logs (last 50 lines):**
+```bash
+az containerapp logs show \
+  --name orchestrator \
+  --resource-group azure-ai-agents \
+  --tail 50
+```
 
-### During Active Use
-
-Resources running:
-- ✅ 3 Cloud Run services (pay per request + idle CPU)
-- ✅ RAG corpus storage (~$0.02/GB/month)
-- ✅ BigQuery storage (minimal, ~free tier)
-- ✅ Artifact Registry storage (~$0.10/GB/month)
-- ✅ Cloud Storage (~$0.02/GB/month)
-
-**Estimated cost**: $5-10/month with light usage
-
-### During Idle (After Cleanup)
-
-After running cleanup workflow:
-- ❌ Cloud Run services deleted (saves ~80% of costs)
-- ✅ BigQuery dataset kept (no cost for small datasets)
-- ❌ Old Docker images deleted
-- ⚠️ RAG corpus: Optional (can delete if needed)
-
-**Estimated cost**: $1-2/month for storage only
-
-### Best Practices
-
-1. **Deploy when needed:**
-   ```bash
-   # Push to deploy
-   git push origin master
-   ```
-
-2. **Cleanup when done:**
-   ```bash
-   # Via GitHub Actions UI or:
-   gh workflow run cleanup.yml -f delete_storage=false -f delete_rag_corpus=false
-   ```
-
-3. **Keep RAG corpus:** Saves 5-10 minutes on next deploy
-
-4. **Delete storage:** If documents change frequently, clean and re-ingest
-
-## 🔧 Configuration
-
-### GitHub Secrets/Variables
-
-All required variables are already configured:
-
-| Variable | Value | Purpose |
-|----------|-------|---------|
-| `GCP_PROJECT_ID` | agenticaigcplearn | GCP project |
-| `GCP_PROJECT_NUMBER` | 1073291557100 | Project number |
-| `GCP_REGION` | europe-west4 | Deployment region |
-| `RAG_CORPUS` | projects/.../ragCorpora/... | Full corpus resource |
-| `RAG_CORPUS_ID` | 576460752303423488 | Corpus ID only |
-| `GCS_BUCKET` | agenticaigcplearn-adk-docs | Storage bucket |
-| `RETRIEVER_AGENT_URL` | (auto-set) | A2A endpoint |
-| `ORCHESTRATOR_AGENT_URL` | (auto-set) | Main entry |
-
-### Update Configuration
+### Check Deployment Status
 
 ```bash
-# Update a variable
-gh variable set RAG_CORPUS_ID --body "NEW_ID"
+# Get orchestrator status
+az containerapp show \
+  --name orchestrator \
+  --resource-group azure-ai-agents \
+  --query properties.runningStatus -o tsv
 
-# List all variables
-gh variable list
+# Get revision status
+az containerapp revision list \
+  --name orchestrator \
+  --resource-group azure-ai-agents \
+  --query "[].{Name:name, Status:properties.runningStatus, CreatedTime:properties.createdTime}" -o table
 ```
 
-## 🐛 Troubleshooting
+### Test Endpoints
 
-### Deployment Failed: BigQuery Setup
-
-**Error**: "Dataset already exists" or "Permission denied"
-
-**Solution**:
+**Health check:**
 ```bash
-# Check dataset
-bq ls geography_index
-
-# Recreate if needed
-python infra/setup_bigquery.py
+curl https://orchestrator-xxx.azurecontainerapps.io/health
 ```
 
-### Deployment Failed: Docker Build
-
-**Error**: "COPY failed" or "bigquery_agent not found"
-
-**Solution**: Ensure folder structure is correct:
-```
-agents/
-├── bigquery_agent/
-├── orchestrator_agent/
-└── retriever_agent/
+**Test query:**
+```bash
+curl -X POST https://orchestrator-xxx.azurecontainerapps.io/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello"}'
 ```
 
-### Runtime Error: "Module not found: bigquery_agent"
+### View Application Insights (if configured)
 
-**Cause**: Dockerfile build context incorrect
+```bash
+# Get Application Insights connection string
+az monitor app-insights component show \
+  --app ai-agents-insights \
+  --resource-group azure-ai-agents \
+  --query connectionString -o tsv
+```
 
-**Solution**: Check deploy.yml line:
+Then view in Azure Portal: `https://portal.azure.com → Application Insights`
+
+---
+
+## 🔧 Troubleshooting
+
+### Issue 1: Deployment Fails with "Image not found"
+
+**Error**: `Failed to pull image: yourregistry.azurecr.io/orchestrator:latest`
+
+**Fix:**
+```bash
+# Check if image exists in ACR
+az acr repository list --name $ACR_NAME
+
+# If missing, rebuild and push
+docker build -t $ACR_LOGIN_SERVER/orchestrator:latest agents/orchestrator_agent
+docker push $ACR_LOGIN_SERVER/orchestrator:latest
+```
+
+### Issue 2: Container App Crashes on Startup
+
+**Error**: `Application failed to start` in logs
+
+**Debug steps:**
+1. Check environment variables are set correctly:
+   ```bash
+   az containerapp show --name orchestrator --resource-group azure-ai-agents \
+     --query properties.template.containers[0].env
+   ```
+
+2. View startup logs:
+   ```bash
+   az containerapp logs show --name orchestrator --resource-group azure-ai-agents --tail 100
+   ```
+
+3. Common issues:
+   - Missing `AZURE_OPENAI_ENDPOINT`
+   - Invalid SQL connection string
+   - Retriever URL not set for orchestrator
+
+### Issue 3: A2A Communication Fails
+
+**Error**: `Failed to call retriever agent`
+
+**Fix:**
+1. Verify retriever is running:
+   ```bash
+   az containerapp show --name retriever --resource-group azure-ai-agents \
+     --query properties.runningStatus
+   ```
+
+2. Check RETRIEVER_URL in orchestrator:
+   ```bash
+   az containerapp show --name orchestrator --resource-group azure-ai-agents \
+     --query "properties.template.containers[0].env[?name=='RETRIEVER_URL'].value" -o tsv
+   ```
+
+3. Test retriever directly:
+   ```bash
+   curl https://retriever-xxx.azurecontainerapps.io/.well-known/agent-card.json
+   ```
+
+### Issue 4: High Costs
+
+**Problem**: Azure bill is higher than expected
+
+**Investigate:**
+```bash
+# Check Container App scaling
+az containerapp show --name orchestrator --resource-group azure-ai-agents \
+  --query properties.template.scale
+
+# Check Azure OpenAI usage
+az monitor metrics list \
+  --resource $(az cognitiveservices account show --name $OPENAI_NAME --resource-group azure-ai-agents --query id -o tsv) \
+  --metric TotalTokens \
+  --interval PT1H
+```
+
+**Optimize:**
+1. Scale down Container Apps: `minReplicas: 0`
+2. Use Azure SQL serverless (auto-pause)
+3. Set Azure OpenAI quotas/alerts
+4. Delete unused ACR images
+
+---
+
+## 📊 Performance Optimization
+
+### Scaling Configuration
+
+**Orchestrator (high traffic):**
 ```yaml
-docker build -t "$IMAGE" -f agents/orchestrator_agent/Dockerfile agents/
-#                                                              ^^^^^^ Must be agents/ folder
+scale:
+  minReplicas: 1  # Keep warm for fast response
+  maxReplicas: 10
+  rules:
+  - name: http-rule
+    http:
+      metadata:
+        concurrentRequests: '10'
 ```
 
-### Cleanup Failed: Corpus Deletion
-
-**Error**: HTTP 404 or 403
-
-**Solution**: Update `RAG_CORPUS_ID` variable:
-```bash
-# Get corpus ID from orchestrator env vars
-gcloud run services describe orchestrator-agent --format=yaml | grep RAG_CORPUS
-
-# Update variable
-gh variable set RAG_CORPUS_ID --body "YOUR_CORPUS_ID"
+**Retriever (moderate traffic):**
+```yaml
+scale:
+  minReplicas: 0  # Scale to zero when idle
+  maxReplicas: 5
+  rules:
+  - name: http-rule
+    http:
+      metadata:
+        concurrentRequests: '20'
 ```
 
-## 📊 Monitoring
+### Resource Limits
 
-### Service Status
-
-```bash
-# List all services
-gcloud run services list --region=europe-west4
-
-# Check specific service
-gcloud run services describe orchestrator-agent --region=europe-west4
+```yaml
+resources:
+  cpu: 0.5          # 0.5 vCPU
+  memory: 1.0Gi     # 1 GB RAM
 ```
 
-### Resource Usage
+### Cold Start Optimization
 
-```bash
-# Cloud Run metrics
-gcloud monitoring time-series list \
-  --filter='resource.type="cloud_run_revision"' \
-  --format="table(metric.type)"
+1. Use `minReplicas: 1` for orchestrator (always warm)
+2. Pre-load SQL connection pool on startup
+3. Cache retriever URL in orchestrator
+4. Use Application Insights for performance monitoring
 
-# BigQuery storage
-bq show --project_id=agenticaigcplearn geography_index
+---
 
-# GCS storage
-gcloud storage du gs://agenticaigcplearn-adk-docs
-```
+## 🔐 Security Best Practices
 
-### Costs
+1. **Use Managed Identity**: Replace API keys with managed identity
+2. **Key Vault Integration**: Store secrets in Azure Key Vault
+3. **Network Isolation**: Use virtual network integration
+4. **HTTPS Only**: Enforce HTTPS for all ingress
+5. **RBAC**: Grant minimal permissions to service principal
+6. **Rotate Credentials**: Regularly rotate ACR passwords and API keys
+7. **Audit Logs**: Enable diagnostic settings for all resources
 
-View costs at:
-- https://console.cloud.google.com/billing/
-- Filter by project: agenticaigcplearn
-- Group by: Service
+---
 
-## 🔄 Redeploy After Changes
+## 📅 Maintenance Tasks
 
-### Update Agent Code
+### Weekly
+- Review Application Insights for errors
+- Check cost management dashboard
+- Delete old ACR images (> 7 days old)
 
-```bash
-# Edit code in agents/ folder
-vim agents/orchestrator_agent/agent.py
+### Monthly
+- Review and optimize scaling rules
+- Update base Docker images
+- Rotate Azure OpenAI API keys
+- Verify backup policies (SQL database)
 
-# Commit and push (auto-deploys)
-git add -A
-git commit -m "Update orchestrator instructions"
-git push origin master
-```
+### Quarterly
+- Review security recommendations
+- Update MAF framework and dependencies
+- Load test system under peak conditions
+- Review and optimize costs
 
-### Update Documents
+---
 
-```bash
-# Edit or add documents
-vim data/sample_docs/new_doc.md
+## 🔗 Additional Resources
 
-# Push to deploy (uploads + re-ingests)
-git add -A
-git commit -m "Add new documentation"
-git push origin master
-```
+- [Azure Container Apps Docs](https://learn.microsoft.com/en-us/azure/container-apps/)
+- [GitHub Actions for Azure](https://github.com/Azure/actions)
+- [Azure OpenAI Service](https://learn.microsoft.com/en-us/azure/ai-services/openai/)
+- [Azure AI Search](https://learn.microsoft.com/en-us/azure/search/)
+- [Microsoft Agent Framework](https://microsoft.github.io/agent-framework/)
 
-### Update BigQuery Data
+---
 
-```bash
-# Edit setup script
-vim infra/setup_bigquery.py
+## 💬 Support
 
-# Push to deploy (recreates tables)
-git add -A
-git commit -m "Add more states/districts"
-git push origin master
-```
-
-## 📚 Additional Resources
-
-- [Local Testing Guide](../LOCAL_TESTING.md) - Test before deploying
-- [Architecture Overview](./ARCHITECTURE.md) - System design
-- [Setup Guide](./SETUP.md) - Initial GCP configuration
-- [GitHub Actions Docs](https://docs.github.com/en/actions) - Workflow syntax
-
-## 🎯 Next Steps
-
-1. ✅ Deploy to GCP via workflow
-2. ✅ Test deployed services
-3. ✅ Add more documents to `data/sample_docs/`
-4. ✅ Update BigQuery with more sample data
-5. ✅ Monitor costs and usage
-6. ✅ Cleanup when done testing
+For deployment issues:
+1. Check [GitHub Actions logs](https://github.com/abhimasum/AzureCloudAi/actions)
+2. Review [ARCHITECTURE.md](ARCHITECTURE.md) for system design
+3. See [SETUP.md](SETUP.md) for initial configuration
+4. Check [MIGRATION_STATUS.md](../MIGRATION_STATUS.md) for known issues
