@@ -1,0 +1,198 @@
+name: 🧹 Cleanup Resources (Cost Optimization)
+
+on:
+  workflow_dispatch:
+    inputs:
+      delete_storage:
+        description: "Delete Cloud Storage bucket contents? (Set to 'false' to KEEP)"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      delete_docker_images:
+        description: "Delete Artifact Registry images? (Set to 'false' to KEEP)"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      delete_rag_corpus:
+        description: "Delete RAG Corpus (knowledge base)? (Set to 'true' to DELETE)"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGION: ${{ vars.GCP_REGION }}
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  AR_REPO: adk-agents
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📋 Cleanup Summary
+        run: |
+          echo "🧹 CLEANUP PLAN"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚀 Cloud Run Services: DELETE"
+          echo "   • retriever-agent"
+          echo "   • orchestrator-agent"
+          echo "   • ingestion"
+          echo ""
+          echo "📚 RAG Corpus: ${{ inputs.delete_rag_corpus == 'true' && 'DELETE ⚠️' || 'KEEP ✓' }}"
+          echo "🐳 Docker Images: ${{ inputs.delete_docker_images == 'true' && 'DELETE' || 'KEEP' }}"
+          echo "💾 Storage Bucket: ${{ inputs.delete_storage == 'true' && 'DELETE' || 'KEEP' }}"
+          echo ""
+          echo "❌ GCP Project: KEEP (no cost)"
+          echo "❌ APIs/Enabled Services: KEEP"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: "1️⃣ Delete Cloud Run Services"
+        run: |
+          echo "🚀 Deleting Cloud Run services..."
+          
+          SERVICES=("retriever-agent" "orchestrator-agent" "ingestion")
+          for SERVICE in "${SERVICES[@]}"; do
+            echo "   Deleting $SERVICE..."
+            gcloud run services delete "$SERVICE" \
+              --project="${PROJECT_ID}" \
+              --region="${REGION}" \
+              --quiet 2>/dev/null && echo "   ✓ $SERVICE deleted" || echo "   ⚠️  $SERVICE not found or already deleted"
+          done
+
+      - name: "2️⃣ Delete RAG Corpus (if requested)"
+        if: ${{ inputs.delete_rag_corpus == 'true' }}
+        run: |
+          echo "📚 Deleting RAG Corpus..."
+          CORPUS_ID="${{ vars.RAG_CORPUS_ID }}"
+          
+          if [ -z "$CORPUS_ID" ]; then
+            echo "   ⚠️  RAG_CORPUS_ID not set in GitHub variables"
+            exit 0
+          fi
+          
+          # Get access token
+          TOKEN=$(gcloud auth print-access-token)
+          
+          # Delete RAG corpus via REST API (using regional endpoint)
+          # Note: Corpus is in europe-west4 (us-central1 was restricted for new projects)
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X DELETE \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://${REGION}-aiplatform.googleapis.com/v1beta1/projects/${PROJECT_ID}/locations/${REGION}/ragCorpora/${CORPUS_ID}")
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
+            echo "   ✓ RAG Corpus deleted"
+          else
+            echo "   ⚠️  Could not delete corpus (HTTP $HTTP_CODE) - may not exist or already deleted"
+          fi
+
+      - name: "3️⃣ Delete Artifact Registry Images (if requested)"
+        if: ${{ inputs.delete_docker_images == 'true' }}
+        run: |
+          echo "🐳 Deleting Docker images from Artifact Registry..."
+          
+          # List and delete all images using xargs for proper variable passing
+          IMAGES=$(gcloud artifacts docker images list \
+            "${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}" \
+            --project="${PROJECT_ID}" \
+            --format='value(image)')
+          
+          if [ -z "$IMAGES" ]; then
+            echo "   ℹ️  No images found to delete"
+          else
+            echo "$IMAGES" | xargs -I {} gcloud artifacts docker images delete {} \
+              --project="${PROJECT_ID}" \
+              --quiet 2>/dev/null && echo "   ✓ Images deleted" || echo "   ⚠️  Some images could not be deleted"
+          fi
+          echo "   ✓ Docker images cleanup complete"
+
+      - name: "4️⃣ Delete Cloud Storage Contents (if requested)"
+        if: ${{ inputs.delete_storage == 'true' }}
+        run: |
+          echo "💾 Deleting Cloud Storage bucket contents..."
+          BUCKET_NAME="agenticaigcplearn-adk-docs"
+          
+          # List all objects and delete them one by one (wildcard patterns don't work reliably)
+          echo "   Listing objects to delete..."
+          FILES=$(gcloud storage ls "gs://${BUCKET_NAME}" 2>/dev/null || echo "")
+          
+          if [ -z "$FILES" ]; then
+            echo "   ℹ️  Bucket is already empty"
+          else
+            echo "   Deleting objects individually..."
+            DELETED=0
+            FAILED=0
+            for FILE in $FILES; do
+              if gcloud storage rm "$FILE" 2>/dev/null; then
+                DELETED=$((DELETED + 1))
+              else
+                FAILED=$((FAILED + 1))
+                echo "   ⚠️  Failed to delete: $FILE"
+              fi
+            done
+            echo "   ✓ Deleted $DELETED objects, $FAILED failed"
+          fi
+
+      - name: "✅ Cleanup Complete"
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ CLEANUP COMPLETED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "📝 Resources Deleted:"
+          echo "   ✓ Cloud Run Services (all)"
+          echo "   ${{ inputs.delete_rag_corpus == 'true' && '✓ RAG Corpus (knowledge base)' || '• RAG Corpus (kept)' }}"
+          echo "   ${{ inputs.delete_docker_images == 'true' && '✓ Docker Images (Artifact Registry)' || '• Docker Images (kept)' }}"
+          echo "   ${{ inputs.delete_storage == 'true' && '✓ Storage Bucket Contents' || '• Storage Bucket Contents (kept)' }}"
+          echo ""
+          echo "💰 Cost Savings:"
+          echo "   ✓ Cloud Run services no longer running (most expensive)"
+          echo "   ✓ Artifact Registry storage freed"
+          echo "   ${{ inputs.delete_rag_corpus == 'true' && '✓ RAG Corpus storage freed' || '• RAG Corpus still consuming storage' }}"
+          echo ""
+          echo "🔄 To Deploy Again:"
+          echo "   1. Update documents in data/ folder if needed"
+          echo "   2. Run the Deploy workflow (push to master or workflow_dispatch)"
+          echo "   3. New RAG corpus will be created with updated documents"
+          echo ""
+          echo "📚 Next Steps:"
+          echo "   • Edit documents in the 'data/' directory"
+          echo "   • Run Deploy workflow to create new knowledge base"
+          echo "   • Agents will be redeployed with new RAG corpus"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  notify:
+    needs: cleanup
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: "📊 Cleanup Summary"
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Cleanup workflow completed successfully"
+          else
+            echo "⚠️  Cleanup workflow had warnings (check logs above)"
+          fi

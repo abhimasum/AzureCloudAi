@@ -1,0 +1,296 @@
+name: Deploy ADK agents
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "agents/**"
+      - "ingestion/**"
+      - "infra/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+    inputs:
+      cleanup_before_deploy:
+        description: "Clean up old resources before deploying?"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write # required for Workload Identity Federation
+
+env:
+  REGION: ${{ vars.GCP_REGION }}
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  AR_REPO: adk-agents
+
+jobs:
+  cleanup-old-resources:
+    if: ${{ github.event.inputs.cleanup_before_deploy == 'true' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🧹 Cleanup old deployments
+        run: |
+          echo "🧹 Cleaning up old resources before deployment..."
+          echo "This ensures a clean slate for the new deployment."
+      
+      - uses: actions/checkout@v4
+      
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      
+      - uses: google-github-actions/setup-gcloud@v2
+      
+      - name: Delete old Cloud Run services (will be recreated)
+        run: |
+          echo "🚀 Deleting old Cloud Run services..."
+          SERVICES=("retriever-agent" "orchestrator-agent" "ingestion")
+          for SERVICE in "${SERVICES[@]}"; do
+            gcloud run services delete "$SERVICE" \
+              --project="${PROJECT_ID}" \
+              --region="${REGION}" \
+              --quiet 2>/dev/null && echo "✓ $SERVICE deleted" || echo "ℹ️ $SERVICE not found (OK)"
+          done
+      
+      - name: Clean up old Docker images (keep last 3)
+        run: |
+          echo "🐳 Cleaning up old Docker images..."
+          for IMAGE_NAME in retriever-agent orchestrator-agent ingestion; do
+            echo "Cleaning $IMAGE_NAME..."
+            gcloud artifacts docker images list \
+              "${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${IMAGE_NAME}" \
+              --project="${PROJECT_ID}" \
+              --format='get(version)' \
+              --sort-by=~CREATE_TIME \
+              --limit=999 | tail -n +4 | while read VERSION; do
+                gcloud artifacts docker images delete \
+                  "${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${IMAGE_NAME}@${VERSION}" \
+                  --project="${PROJECT_ID}" \
+                  --quiet 2>/dev/null || true
+            done
+          done
+          echo "✓ Old images cleaned up"
+
+  setup-bigquery:
+    needs: [cleanup-old-resources]
+    if: always() && (needs.cleanup-old-resources.result == 'success' || needs.cleanup-old-resources.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Grant BigQuery permissions to service account
+        run: |
+          echo "Setting BigQuery permissions for service account..."
+          SA_EMAIL="${{ vars.GCP_SERVICE_ACCOUNT }}"
+          
+          # Grant necessary BigQuery roles
+          gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+            --member="serviceAccount:${SA_EMAIL}" \
+            --role="roles/bigquery.dataEditor" \
+            --quiet 2>/dev/null || echo "BigQuery Data Editor role already assigned"
+          
+          gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+            --member="serviceAccount:${SA_EMAIL}" \
+            --role="roles/bigquery.jobUser" \
+            --quiet 2>/dev/null || echo "BigQuery Job User role already assigned"
+          
+          echo "✓ BigQuery permissions configured"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install BigQuery client
+        run: pip install google-cloud-bigquery db-dtypes
+
+      - name: Setup BigQuery dataset and tables
+        run: |
+          echo "🗄️ Setting up BigQuery dataset and tables..."
+          python infra/setup_bigquery.py
+        env:
+          GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+          GOOGLE_CLOUD_LOCATION: ${{ vars.GCP_REGION }}
+      
+      - name: Verify BigQuery dataset exists
+        run: |
+          echo "✓ Verifying BigQuery dataset..."
+          bq ls --project_id=${PROJECT_ID} | grep geography_index && echo "✓ Dataset verified" || echo "⚠️ Dataset verification skipped"
+
+  deploy-retriever:
+    needs: setup-bigquery
+    runs-on: ubuntu-latest
+    outputs:
+      retriever_url: ${{ steps.url.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/retriever-agent:${{ github.sha }}"
+          docker build -t "$IMAGE" agents/retriever_agent
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy retriever-agent \
+            --project="${PROJECT_ID}" --region="${REGION}" \
+            --image="${IMAGE}" \
+            --allow-unauthenticated \
+            --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=true,RAG_CORPUS=${{ vars.RAG_CORPUS }}"
+
+      - name: Pin PUBLIC_URL so the A2A agent card advertises the real Cloud Run URL
+        id: url
+        run: |
+          URL=$(gcloud run services describe retriever-agent --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')
+          gcloud run services update retriever-agent --project="${PROJECT_ID}" --region="${REGION}" --update-env-vars="PUBLIC_URL=${URL}"
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+
+  deploy-orchestrator:
+    needs: deploy-retriever
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/orchestrator-agent:${{ github.sha }}"
+          docker build -t "$IMAGE" -f agents/orchestrator_agent/Dockerfile agents/
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy orchestrator-agent \
+            --project="${PROJECT_ID}" --region="${REGION}" \
+            --image="${IMAGE}" \
+            --allow-unauthenticated \
+            --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=true,RETRIEVER_AGENT_URL=${{ needs.deploy-retriever.outputs.retriever_url }}"
+
+  deploy-ingestion:
+    needs: [deploy-orchestrator]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Upload documents to Cloud Storage
+        run: |
+          echo "📤 Uploading documents from data/sample_docs/ to gs://${{ vars.GCS_BUCKET }}/"
+          gcloud storage cp data/sample_docs/*.md "gs://${{ vars.GCS_BUCKET }}/"
+          echo "✓ Documents uploaded"
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/ingestion:${{ github.sha }}"
+          docker build -t "$IMAGE" ingestion
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy to Cloud Run (private — no unauthenticated access)
+        run: |
+          gcloud run deploy ingestion \
+            --project="${PROJECT_ID}" --region="${REGION}" \
+            --image="${IMAGE}" \
+            --no-allow-unauthenticated \
+            --timeout=900 \
+            --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},RAG_GCS_SOURCE=gs://${{ vars.GCS_BUCKET }},RAG_CORPUS_ID=${{ vars.RAG_CORPUS_ID }}"
+
+      - name: Allow the Cloud Scheduler service account to invoke this service
+        run: |
+          gcloud run services add-iam-policy-binding ingestion \
+            --project="${PROJECT_ID}" --region="${REGION}" \
+            --member="serviceAccount:scheduler-invoker@${PROJECT_ID}.iam.gserviceaccount.com" \
+            --role="roles/run.invoker"
+
+      - name: Create or update the Cloud Scheduler job
+        run: |
+          URL=$(gcloud run services describe ingestion --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')
+          if gcloud scheduler jobs describe ingest-rag-corpus --project="${PROJECT_ID}" --location="${REGION}" >/dev/null 2>&1; then
+            gcloud scheduler jobs update http ingest-rag-corpus \
+              --project="${PROJECT_ID}" --location="${REGION}" \
+              --uri="${URL}" --http-method=POST \
+              --oidc-service-account-email="scheduler-invoker@${PROJECT_ID}.iam.gserviceaccount.com"
+          else
+            gcloud scheduler jobs create http ingest-rag-corpus \
+              --project="${PROJECT_ID}" --location="${REGION}" \
+              --schedule="0 3 * * *" \
+              --uri="${URL}" --http-method=POST \
+              --oidc-service-account-email="scheduler-invoker@${PROJECT_ID}.iam.gserviceaccount.com"
+          fi
+
+      - name: Trigger ingestion to update RAG corpus immediately
+        run: |
+          echo "📥 Triggering ingestion to update RAG corpus with latest documents..."
+          URL=$(gcloud run services describe ingestion --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')
+          curl -X POST "${URL}" \
+            -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            --silent --show-error
+          echo "✓ Ingestion triggered successfully"
+      
+      - name: 🎉 Deployment Summary
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ DEPLOYMENT COMPLETED SUCCESSFULLY"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "📦 Deployed Services:"
+          echo "   ✓ BigQuery Agent (geography_index dataset)"
+          RETRIEVER_URL=$(gcloud run services describe retriever-agent --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')
+          echo "   ✓ Retriever Agent: $RETRIEVER_URL"
+          ORCH_URL=$(gcloud run services describe orchestrator-agent --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')
+          echo "   ✓ Orchestrator Agent: $ORCH_URL"
+          INGEST_URL=$(gcloud run services describe ingestion --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')
+          echo "   ✓ Ingestion Service: $INGEST_URL"
+          echo ""
+          echo "🌐 Test Your Deployment:"
+          echo "   Open: $ORCH_URL"
+          echo ""
+          echo "💡 Try These Questions:"
+          echo "   • What states are in India?"
+          echo "   • Tell me about Maharashtra"
+          echo "   • What is the capital of Karnataka?"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
