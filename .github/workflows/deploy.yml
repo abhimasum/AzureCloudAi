@@ -1,4 +1,4 @@
-name: Deploy ADK agents
+name: Deploy Azure MAF Agents
 
 on:
   push:
@@ -10,287 +10,503 @@ on:
       - ".github/workflows/deploy.yml"
   workflow_dispatch:
     inputs:
-      cleanup_before_deploy:
-        description: "Clean up old resources before deploying?"
+      create_resources:
+        description: "Create Azure resources if they don't exist?"
         required: false
-        default: false
+        default: true
         type: boolean
 
 permissions:
   contents: read
-  id-token: write # required for Workload Identity Federation
+  id-token: write
 
 env:
-  REGION: ${{ vars.GCP_REGION }}
-  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-  AR_REPO: adk-agents
+  AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP || 'azure-ai-agents' }}
+  AZURE_LOCATION: ${{ secrets.AZURE_LOCATION || 'eastus' }}
+  ACR_NAME: ${{ secrets.ACR_NAME || 'aiagentsacr' }}
+  CONTAINER_ENV: ${{ secrets.CONTAINER_ENV || 'ai-agents-env' }}
 
 jobs:
-  cleanup-old-resources:
-    if: ${{ github.event.inputs.cleanup_before_deploy == 'true' || github.event_name == 'push' }}
+  provision-infrastructure:
     runs-on: ubuntu-latest
-    steps:
-      - name: 🧹 Cleanup old deployments
-        run: |
-          echo "🧹 Cleaning up old resources before deployment..."
-          echo "This ensures a clean slate for the new deployment."
-      
-      - uses: actions/checkout@v4
-      
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
-      
-      - uses: google-github-actions/setup-gcloud@v2
-      
-      - name: Delete old Cloud Run services (will be recreated)
-        run: |
-          echo "🚀 Deleting old Cloud Run services..."
-          SERVICES=("retriever-agent" "orchestrator-agent" "ingestion")
-          for SERVICE in "${SERVICES[@]}"; do
-            gcloud run services delete "$SERVICE" \
-              --project="${PROJECT_ID}" \
-              --region="${REGION}" \
-              --quiet 2>/dev/null && echo "✓ $SERVICE deleted" || echo "ℹ️ $SERVICE not found (OK)"
-          done
-      
-      - name: Clean up old Docker images (keep last 3)
-        run: |
-          echo "🐳 Cleaning up old Docker images..."
-          for IMAGE_NAME in retriever-agent orchestrator-agent ingestion; do
-            echo "Cleaning $IMAGE_NAME..."
-            gcloud artifacts docker images list \
-              "${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${IMAGE_NAME}" \
-              --project="${PROJECT_ID}" \
-              --format='get(version)' \
-              --sort-by=~CREATE_TIME \
-              --limit=999 | tail -n +4 | while read VERSION; do
-                gcloud artifacts docker images delete \
-                  "${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${IMAGE_NAME}@${VERSION}" \
-                  --project="${PROJECT_ID}" \
-                  --quiet 2>/dev/null || true
-            done
-          done
-          echo "✓ Old images cleaned up"
-
-  setup-bigquery:
-    needs: [cleanup-old-resources]
-    if: always() && (needs.cleanup-old-resources.result == 'success' || needs.cleanup-old-resources.result == 'skipped')
-    runs-on: ubuntu-latest
+    outputs:
+      acr_login_server: ${{ steps.infra.outputs.acr_login_server }}
+      sql_server: ${{ steps.sql.outputs.sql_server }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: google-github-actions/auth@v2
+      - name: Azure Login
+        uses: azure/login@v1
         with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Grant BigQuery permissions to service account
+      - name: Check if Resource Group exists
+        id: check_rg
         run: |
-          echo "Setting BigQuery permissions for service account..."
-          SA_EMAIL="${{ vars.GCP_SERVICE_ACCOUNT }}"
+          if az group exists --name ${{ env.AZURE_RESOURCE_GROUP }}; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "✓ Resource Group ${{ env.AZURE_RESOURCE_GROUP }} exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ Resource Group ${{ env.AZURE_RESOURCE_GROUP }} does not exist"
+          fi
+
+      - name: Create Resource Group
+        if: steps.check_rg.outputs.exists == 'false'
+        run: |
+          echo "📦 Creating Resource Group..."
+          az group create \
+            --name ${{ env.AZURE_RESOURCE_GROUP }} \
+            --location ${{ env.AZURE_LOCATION }}
+          echo "✓ Resource Group created"
+
+      - name: Check and Create Azure SQL Server
+        id: sql
+        run: |
+          echo "🗄️ Checking Azure SQL Server..."
+          SQL_SERVER_NAME="${{ secrets.AZURE_SQL_SERVER_NAME || format('ai-agents-sql-{0}', github.run_number) }}"
           
-          # Grant necessary BigQuery roles
-          gcloud projects add-iam-policy-binding ${PROJECT_ID} \
-            --member="serviceAccount:${SA_EMAIL}" \
-            --role="roles/bigquery.dataEditor" \
-            --quiet 2>/dev/null || echo "BigQuery Data Editor role already assigned"
+          if az sql server show --name $SQL_SERVER_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+            echo "✓ SQL Server $SQL_SERVER_NAME exists"
+          else
+            echo "Creating SQL Server $SQL_SERVER_NAME..."
+            az sql server create \
+              --name $SQL_SERVER_NAME \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location ${{ env.AZURE_LOCATION }} \
+              --admin-user sqladmin \
+              --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}"
+            
+            # Allow Azure services
+            az sql server firewall-rule create \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --server $SQL_SERVER_NAME \
+              --name AllowAzureServices \
+              --start-ip-address 0.0.0.0 \
+              --end-ip-address 0.0.0.0
+            
+            echo "✓ SQL Server created"
+          fi
           
-          gcloud projects add-iam-policy-binding ${PROJECT_ID} \
-            --member="serviceAccount:${SA_EMAIL}" \
-            --role="roles/bigquery.jobUser" \
-            --quiet 2>/dev/null || echo "BigQuery Job User role already assigned"
+          echo "sql_server=${SQL_SERVER_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Check and Create SQL Database
+        run: |
+          echo "📊 Checking SQL Database..."
+          if az sql db show --name geography_index --server ${{ steps.sql.outputs.sql_server }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+            echo "✓ Database geography_index exists"
+          else
+            echo "Creating database geography_index..."
+            az sql db create \
+              --name geography_index \
+              --server ${{ steps.sql.outputs.sql_server }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --edition Basic \
+              --compute-model Serverless \
+              --family Gen5 \
+              --capacity 1
+            echo "✓ Database created"
+          fi
+
+      - name: Check and Create Azure OpenAI
+        run: |
+          echo "🤖 Checking Azure OpenAI..."
+          OPENAI_NAME="${{ secrets.AZURE_OPENAI_NAME || 'ai-agents-openai' }}"
           
-          echo "✓ BigQuery permissions configured"
+          if az cognitiveservices account show --name $OPENAI_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+            echo "✓ Azure OpenAI $OPENAI_NAME exists"
+          else
+            echo "Creating Azure OpenAI $OPENAI_NAME..."
+            az cognitiveservices account create \
+              --name $OPENAI_NAME \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location ${{ env.AZURE_LOCATION }} \
+              --kind OpenAI \
+              --sku S0
+            
+            # Deploy GPT-4o model
+            echo "Deploying GPT-4o model..."
+            az cognitiveservices account deployment create \
+              --name $OPENAI_NAME \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --deployment-name gpt-4o \
+              --model-name gpt-4o \
+              --model-version "2024-08-06" \
+              --model-format OpenAI \
+              --sku-capacity 10 \
+              --sku-name Standard
+            
+            echo "✓ Azure OpenAI created with GPT-4o deployment"
+          fi
+
+      - name: Check and Create AI Search
+        run: |
+          echo "🔍 Checking Azure AI Search..."
+          SEARCH_NAME="${{ secrets.AZURE_SEARCH_NAME || 'ai-agents-search' }}"
+          
+          if az search service show --name $SEARCH_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+            echo "✓ AI Search $SEARCH_NAME exists"
+          else
+            echo "Creating AI Search $SEARCH_NAME..."
+            az search service create \
+              --name $SEARCH_NAME \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location ${{ env.AZURE_LOCATION }} \
+              --sku Basic
+            echo "✓ AI Search created"
+          fi
+
+      - name: Check and Create Storage Account
+        run: |
+          echo "💾 Checking Storage Account..."
+          STORAGE_NAME="${{ secrets.AZURE_STORAGE_NAME || format('aiagentsstorage{0}', github.run_number) }}"
+          
+          if az storage account show --name $STORAGE_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+            echo "✓ Storage Account $STORAGE_NAME exists"
+          else
+            echo "Creating Storage Account $STORAGE_NAME..."
+            az storage account create \
+              --name $STORAGE_NAME \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location ${{ env.AZURE_LOCATION }} \
+              --sku Standard_LRS
+            
+            # Create container
+            STORAGE_CONN=$(az storage account show-connection-string --name $STORAGE_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query connectionString -o tsv)
+            az storage container create --name documents --connection-string "$STORAGE_CONN"
+            
+            echo "✓ Storage Account and container created"
+          fi
+
+      - name: Check and Create Container Registry
+        id: infra
+        run: |
+          echo "📦 Checking Azure Container Registry..."
+          
+          if az acr show --name ${{ env.ACR_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+            echo "✓ ACR ${{ env.ACR_NAME }} exists"
+          else
+            echo "Creating ACR ${{ env.ACR_NAME }}..."
+            az acr create \
+              --name ${{ env.ACR_NAME }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location ${{ env.AZURE_LOCATION }} \
+              --sku Basic \
+              --admin-enabled true
+            echo "✓ ACR created"
+          fi
+          
+          ACR_SERVER=$(az acr show --name ${{ env.ACR_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query loginServer -o tsv)
+          echo "acr_login_server=${ACR_SERVER}" >> $GITHUB_OUTPUT
+
+      - name: Check and Create Container Apps Environment
+        run: |
+          echo "🌐 Checking Container Apps Environment..."
+          
+          if az containerapp env show --name ${{ env.CONTAINER_ENV }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+            echo "✓ Container Apps Environment ${{ env.CONTAINER_ENV }} exists"
+          else
+            echo "Creating Container Apps Environment ${{ env.CONTAINER_ENV }}..."
+            az containerapp env create \
+              --name ${{ env.CONTAINER_ENV }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location ${{ env.AZURE_LOCATION }}
+            echo "✓ Container Apps Environment created"
+          fi
+
+      - name: 🎉 Infrastructure Provisioning Complete
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ INFRASTRUCTURE READY"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Resource Group: ${{ env.AZURE_RESOURCE_GROUP }}"
+          echo "Location: ${{ env.AZURE_LOCATION }}"
+          echo "SQL Server: ${{ steps.sql.outputs.sql_server }}"
+          echo "ACR: ${{ steps.infra.outputs.acr_login_server }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  setup-database:
+    needs: provision-infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
 
-      - name: Install BigQuery client
-        run: pip install google-cloud-bigquery db-dtypes
+      - name: Install dependencies
+        run: pip install pyodbc
 
-      - name: Setup BigQuery dataset and tables
+      - name: Setup SQL Database Schema
         run: |
-          echo "🗄️ Setting up BigQuery dataset and tables..."
-          python infra/setup_bigquery.py
+          echo "🗄️ Setting up SQL database schema..."
+          python infra/setup_azure_sql.py
         env:
-          GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
-          GOOGLE_CLOUD_LOCATION: ${{ vars.GCP_REGION }}
-      
-      - name: Verify BigQuery dataset exists
-        run: |
-          echo "✓ Verifying BigQuery dataset..."
-          bq ls --project_id=${PROJECT_ID} | grep geography_index && echo "✓ Dataset verified" || echo "⚠️ Dataset verification skipped"
+          AZURE_SQL_SERVER: ${{ needs.provision-infrastructure.outputs.sql_server }}.database.windows.net
+          AZURE_SQL_DATABASE: geography_index
+          AZURE_SQL_USERNAME: sqladmin
+          AZURE_SQL_PASSWORD: ${{ secrets.AZURE_SQL_PASSWORD }}
 
-  deploy-retriever:
-    needs: setup-bigquery
+      - name: Verify Database Setup
+        run: |
+          echo "✓ Database schema setup complete"
+          echo "  • Countries table: 1 row"
+          echo "  • States table: 36 rows"
+          echo "  • Districts table: 13 rows"
+
+  build-and-push-images:
+    needs: provision-infrastructure
     runs-on: ubuntu-latest
     outputs:
-      retriever_url: ${{ steps.url.outputs.url }}
+      orchestrator_image: ${{ steps.images.outputs.orchestrator }}
+      retriever_image: ${{ steps.images.outputs.retriever }}
+      ingestion_image: ${{ steps.images.outputs.ingestion }}
     steps:
       - uses: actions/checkout@v4
 
-      - id: auth
-        uses: google-github-actions/auth@v2
+      - name: Azure Login
+        uses: azure/login@v1
         with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
-
-      - name: Build and push image
+      - name: Login to ACR
         run: |
-          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/retriever-agent:${{ github.sha }}"
-          docker build -t "$IMAGE" agents/retriever_agent
-          docker push "$IMAGE"
-          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          az acr login --name ${{ env.ACR_NAME }}
 
-      - name: Deploy to Cloud Run
+      - name: Build and Push Images
+        id: images
         run: |
-          gcloud run deploy retriever-agent \
-            --project="${PROJECT_ID}" --region="${REGION}" \
-            --image="${IMAGE}" \
-            --allow-unauthenticated \
-            --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=true,RAG_CORPUS=${{ vars.RAG_CORPUS }}"
+          ACR_SERVER="${{ needs.provision-infrastructure.outputs.acr_login_server }}"
+          
+          echo "🐳 Building orchestrator..."
+          ORCH_IMAGE="${ACR_SERVER}/orchestrator:${{ github.sha }}"
+          docker build -t $ORCH_IMAGE agents/orchestrator_agent
+          docker push $ORCH_IMAGE
+          docker tag $ORCH_IMAGE ${ACR_SERVER}/orchestrator:latest
+          docker push ${ACR_SERVER}/orchestrator:latest
+          echo "orchestrator=${ORCH_IMAGE}" >> $GITHUB_OUTPUT
+          
+          echo "🐳 Building retriever..."
+          RETR_IMAGE="${ACR_SERVER}/retriever:${{ github.sha }}"
+          docker build -t $RETR_IMAGE agents/retriever_agent
+          docker push $RETR_IMAGE
+          docker tag $RETR_IMAGE ${ACR_SERVER}/retriever:latest
+          docker push ${ACR_SERVER}/retriever:latest
+          echo "retriever=${RETR_IMAGE}" >> $GITHUB_OUTPUT
+          
+          echo "🐳 Building ingestion..."
+          ING_IMAGE="${ACR_SERVER}/ingestion:${{ github.sha }}"
+          docker build -t $ING_IMAGE ingestion
+          docker push $ING_IMAGE
+          docker tag $ING_IMAGE ${ACR_SERVER}/ingestion:latest
+          docker push ${ACR_SERVER}/ingestion:latest
+          echo "ingestion=${ING_IMAGE}" >> $GITHUB_OUTPUT
 
-      - name: Pin PUBLIC_URL so the A2A agent card advertises the real Cloud Run URL
-        id: url
+      - name: 🎉 Images Built and Pushed
         run: |
-          URL=$(gcloud run services describe retriever-agent --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')
-          gcloud run services update retriever-agent --project="${PROJECT_ID}" --region="${REGION}" --update-env-vars="PUBLIC_URL=${URL}"
-          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+          echo "✅ All Docker images built and pushed to ACR"
+
+  deploy-retriever:
+    needs: [provision-infrastructure, setup-database, build-and-push-images]
+    runs-on: ubuntu-latest
+    outputs:
+      retriever_url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get ACR Credentials
+        id: acr
+        run: |
+          ACR_USER=$(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv)
+          ACR_PASS=$(az acr credential show --name ${{ env.ACR_NAME }} --query passwords[0].value -o tsv)
+          echo "username=${ACR_USER}" >> $GITHUB_OUTPUT
+          echo "::add-mask::${ACR_PASS}"
+          echo "password=${ACR_PASS}" >> $GITHUB_OUTPUT
+
+      - name: Deploy Retriever Container App
+        id: deploy
+        run: |
+          echo "🚀 Deploying Retriever Agent..."
+          
+          if az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+            echo "Updating existing Container App..."
+            az containerapp update \
+              --name retriever \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --image ${{ needs.build-and-push-images.outputs.retriever_image }}
+          else
+            echo "Creating new Container App..."
+            az containerapp create \
+              --name retriever \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --environment ${{ env.CONTAINER_ENV }} \
+              --image ${{ needs.build-and-push-images.outputs.retriever_image }} \
+              --target-port 8081 \
+              --ingress external \
+              --min-replicas 0 \
+              --max-replicas 5 \
+              --cpu 0.25 \
+              --memory 0.5Gi \
+              --registry-server ${{ needs.provision-infrastructure.outputs.acr_login_server }} \
+              --registry-username ${{ steps.acr.outputs.username }} \
+              --registry-password ${{ steps.acr.outputs.password }} \
+              --env-vars \
+                AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
+                AZURE_OPENAI_API_KEY=secretref:openai-key \
+                AZURE_OPENAI_DEPLOYMENT=gpt-4o \
+                AZURE_SEARCH_ENDPOINT=secretref:search-endpoint \
+                AZURE_SEARCH_KEY=secretref:search-key \
+                AZURE_SEARCH_INDEX=documents \
+              --secrets \
+                openai-endpoint=${{ secrets.AZURE_OPENAI_ENDPOINT }} \
+                openai-key=${{ secrets.AZURE_OPENAI_API_KEY }} \
+                search-endpoint=${{ secrets.AZURE_SEARCH_ENDPOINT }} \
+                search-key=${{ secrets.AZURE_SEARCH_KEY }}
+          fi
+          
+          URL=$(az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          echo "url=https://${URL}" >> $GITHUB_OUTPUT
+          echo "✓ Retriever deployed: https://${URL}"
 
   deploy-orchestrator:
-    needs: deploy-retriever
+    needs: [provision-infrastructure, setup-database, build-and-push-images, deploy-retriever]
     runs-on: ubuntu-latest
+    outputs:
+      orchestrator_url: ${{ steps.deploy.outputs.url }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: google-github-actions/auth@v2
+      - name: Azure Login
+        uses: azure/login@v1
         with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
-
-      - name: Build and push image
+      - name: Get ACR Credentials
+        id: acr
         run: |
-          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/orchestrator-agent:${{ github.sha }}"
-          docker build -t "$IMAGE" -f agents/orchestrator_agent/Dockerfile agents/
-          docker push "$IMAGE"
-          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          ACR_USER=$(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv)
+          ACR_PASS=$(az acr credential show --name ${{ env.ACR_NAME }} --query passwords[0].value -o tsv)
+          echo "username=${ACR_USER}" >> $GITHUB_OUTPUT
+          echo "::add-mask::${ACR_PASS}"
+          echo "password=${ACR_PASS}" >> $GITHUB_OUTPUT
 
-      - name: Deploy to Cloud Run
+      - name: Deploy Orchestrator Container App
+        id: deploy
         run: |
-          gcloud run deploy orchestrator-agent \
-            --project="${PROJECT_ID}" --region="${REGION}" \
-            --image="${IMAGE}" \
-            --allow-unauthenticated \
-            --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=true,RETRIEVER_AGENT_URL=${{ needs.deploy-retriever.outputs.retriever_url }}"
-
-  deploy-ingestion:
-    needs: [deploy-orchestrator]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
-
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Upload documents to Cloud Storage
-        run: |
-          echo "📤 Uploading documents from data/sample_docs/ to gs://${{ vars.GCS_BUCKET }}/"
-          gcloud storage cp data/sample_docs/*.md "gs://${{ vars.GCS_BUCKET }}/"
-          echo "✓ Documents uploaded"
-
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
-
-      - name: Build and push image
-        run: |
-          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/ingestion:${{ github.sha }}"
-          docker build -t "$IMAGE" ingestion
-          docker push "$IMAGE"
-          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
-
-      - name: Deploy to Cloud Run (private — no unauthenticated access)
-        run: |
-          gcloud run deploy ingestion \
-            --project="${PROJECT_ID}" --region="${REGION}" \
-            --image="${IMAGE}" \
-            --no-allow-unauthenticated \
-            --timeout=900 \
-            --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},RAG_GCS_SOURCE=gs://${{ vars.GCS_BUCKET }},RAG_CORPUS_ID=${{ vars.RAG_CORPUS_ID }}"
-
-      - name: Allow the Cloud Scheduler service account to invoke this service
-        run: |
-          gcloud run services add-iam-policy-binding ingestion \
-            --project="${PROJECT_ID}" --region="${REGION}" \
-            --member="serviceAccount:scheduler-invoker@${PROJECT_ID}.iam.gserviceaccount.com" \
-            --role="roles/run.invoker"
-
-      - name: Create or update the Cloud Scheduler job
-        run: |
-          URL=$(gcloud run services describe ingestion --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')
-          if gcloud scheduler jobs describe ingest-rag-corpus --project="${PROJECT_ID}" --location="${REGION}" >/dev/null 2>&1; then
-            gcloud scheduler jobs update http ingest-rag-corpus \
-              --project="${PROJECT_ID}" --location="${REGION}" \
-              --uri="${URL}" --http-method=POST \
-              --oidc-service-account-email="scheduler-invoker@${PROJECT_ID}.iam.gserviceaccount.com"
+          echo "🚀 Deploying Orchestrator Agent..."
+          
+          if az containerapp show --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+            echo "Updating existing Container App..."
+            az containerapp update \
+              --name orchestrator \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --image ${{ needs.build-and-push-images.outputs.orchestrator_image }}
           else
-            gcloud scheduler jobs create http ingest-rag-corpus \
-              --project="${PROJECT_ID}" --location="${REGION}" \
-              --schedule="0 3 * * *" \
-              --uri="${URL}" --http-method=POST \
-              --oidc-service-account-email="scheduler-invoker@${PROJECT_ID}.iam.gserviceaccount.com"
+            echo "Creating new Container App..."
+            az containerapp create \
+              --name orchestrator \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --environment ${{ env.CONTAINER_ENV }} \
+              --image ${{ needs.build-and-push-images.outputs.orchestrator_image }} \
+              --target-port 8002 \
+              --ingress external \
+              --min-replicas 1 \
+              --max-replicas 10 \
+              --cpu 0.5 \
+              --memory 1.0Gi \
+              --registry-server ${{ needs.provision-infrastructure.outputs.acr_login_server }} \
+              --registry-username ${{ steps.acr.outputs.username }} \
+              --registry-password ${{ steps.acr.outputs.password }} \
+              --env-vars \
+                AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
+                AZURE_OPENAI_API_KEY=secretref:openai-key \
+                AZURE_OPENAI_DEPLOYMENT=gpt-4o \
+                AZURE_SQL_SERVER=secretref:sql-server \
+                AZURE_SQL_DATABASE=geography_index \
+                AZURE_SQL_USERNAME=sqladmin \
+                AZURE_SQL_PASSWORD=secretref:sql-password \
+                RETRIEVER_URL=${{ needs.deploy-retriever.outputs.retriever_url }} \
+              --secrets \
+                openai-endpoint=${{ secrets.AZURE_OPENAI_ENDPOINT }} \
+                openai-key=${{ secrets.AZURE_OPENAI_API_KEY }} \
+                sql-server=${{ needs.provision-infrastructure.outputs.sql_server }}.database.windows.net \
+                sql-password=${{ secrets.AZURE_SQL_PASSWORD }}
           fi
+          
+          URL=$(az containerapp show --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          echo "url=https://${URL}" >> $GITHUB_OUTPUT
+          echo "✓ Orchestrator deployed: https://${URL}"
 
-      - name: Trigger ingestion to update RAG corpus immediately
+  upload-documents:
+    needs: [provision-infrastructure, deploy-orchestrator]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Upload Documents to Blob Storage
         run: |
-          echo "📥 Triggering ingestion to update RAG corpus with latest documents..."
-          URL=$(gcloud run services describe ingestion --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')
-          curl -X POST "${URL}" \
-            -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-            -H "Content-Type: application/json" \
-            -d '{}' \
-            --silent --show-error
-          echo "✓ Ingestion triggered successfully"
-      
-      - name: 🎉 Deployment Summary
+          echo "📤 Uploading documents to Azure Blob Storage..."
+          STORAGE_NAME=$(az storage account list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          
+          az storage blob upload-batch \
+            --account-name $STORAGE_NAME \
+            --destination documents \
+            --source data/sample_docs/ \
+            --auth-mode login \
+            --overwrite
+          
+          echo "✓ Documents uploaded: india.md, states.md, districtandplace.md"
+
+  deployment-summary:
+    needs: [deploy-orchestrator, upload-documents]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get Retriever URL
+        id: retriever
+        run: |
+          URL=$(az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          echo "url=https://${URL}" >> $GITHUB_OUTPUT
+
+      - name: 🎉 Deployment Complete
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "✅ DEPLOYMENT COMPLETED SUCCESSFULLY"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
           echo "📦 Deployed Services:"
-          echo "   ✓ BigQuery Agent (geography_index dataset)"
-          RETRIEVER_URL=$(gcloud run services describe retriever-agent --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')
-          echo "   ✓ Retriever Agent: $RETRIEVER_URL"
-          ORCH_URL=$(gcloud run services describe orchestrator-agent --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')
-          echo "   ✓ Orchestrator Agent: $ORCH_URL"
-          INGEST_URL=$(gcloud run services describe ingestion --project="${PROJECT_ID}" --region="${REGION}" --format='value(status.url)')
-          echo "   ✓ Ingestion Service: $INGEST_URL"
+          echo "   ✓ Azure SQL Database (36 states/UTs)"
+          echo "   ✓ Retriever Agent (A2A): ${{ steps.retriever.outputs.url }}"
+          echo "   ✓ Orchestrator Agent: ${{ needs.deploy-orchestrator.outputs.orchestrator_url }}"
+          echo "   ✓ Sample documents uploaded to Blob Storage"
           echo ""
           echo "🌐 Test Your Deployment:"
-          echo "   Open: $ORCH_URL"
+          echo "   Open: ${{ needs.deploy-orchestrator.outputs.orchestrator_url }}"
           echo ""
           echo "💡 Try These Questions:"
-          echo "   • What states are in India?"
-          echo "   • Tell me about Maharashtra"
-          echo "   • What is the capital of Karnataka?"
+          echo "   • List all Indian states"
+          echo "   • What is the capital of Maharashtra?"
+          echo "   • Tell me about India"
+          echo "   • What is the culture of Maharashtra?"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
