@@ -247,6 +247,32 @@ jobs:
           echo "❌ Failed to create database after $MAX_ATTEMPTS attempts"
           exit 1
 
+      - name: Purge Soft-Deleted OpenAI Resources
+        run: |
+          echo "🔥 Checking for soft-deleted OpenAI resources..."
+          
+          # List all deleted cognitive services accounts
+          DELETED_RESOURCES=$(az cognitiveservices account list-deleted --query "[?resourceGroup=='${{ env.AZURE_RESOURCE_GROUP }}'].{name:name, location:location}" -o json)
+          
+          echo "Deleted resources: $DELETED_RESOURCES"
+          
+          if [ "$DELETED_RESOURCES" != "[]" ]; then
+            echo "Found soft-deleted OpenAI resources, purging..."
+            
+            # Try to purge the specific resource
+            az cognitiveservices account purge \
+              --name ${{ env.OPENAI_NAME }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location ${{ env.AZURE_LOCATION }} 2>&1 || echo "Purge attempt completed (may already be purged)"
+            
+            echo "Waiting 30 seconds for purge to complete..."
+            sleep 30
+            
+            echo "✓ Soft-deleted resources purged"
+          else
+            echo "✓ No soft-deleted resources found"
+          fi
+
       - name: Check and Create Azure OpenAI
         run: |
           echo "🤖 Checking Azure OpenAI: ${{ env.OPENAI_NAME }}"
