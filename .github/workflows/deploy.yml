@@ -21,6 +21,7 @@ permissions:
   id-token: write
 
 env:
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || '' }}
   AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP || 'azure-ai-agents' }}
   AZURE_LOCATION: ${{ secrets.AZURE_LOCATION || 'eastus' }}
   ACR_NAME: ${{ secrets.ACR_NAME || 'aiagentsacr' }}
@@ -40,34 +41,118 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Verify Azure Subscription and Permissions
+        run: |
+          echo "🔍 Verifying Azure subscription and permissions..."
+          
+          # Get current subscription
+          SUBSCRIPTION=$(az account show --query id -o tsv)
+          echo "Current Subscription: $SUBSCRIPTION"
+          
+          # Set subscription explicitly if provided
+          if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
+            echo "Setting explicit subscription: ${{ env.AZURE_SUBSCRIPTION_ID }}"
+            az account set --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}"
+          fi
+          
+          # Verify subscription after setting
+          SUBSCRIPTION=$(az account show --query id -o tsv)
+          echo "Active Subscription: $SUBSCRIPTION"
+          
+          # List all resource groups to verify access
+          echo ""
+          echo "Resource Groups in subscription:"
+          az group list --query "[].name" -o table || {
+            echo "⚠️ Could not list resource groups"
+          }
+          
+          echo ""
+          echo "✓ Subscription and permissions verified"
+
       - name: Create Resource Group (Mandatory - First Step)
         run: |
-          echo "📦 Creating/Verifying Resource Group..."
+          echo "📦 Creating/Verifying Resource Group: ${{ env.AZURE_RESOURCE_GROUP }}"
+          echo "   Location: ${{ env.AZURE_LOCATION }}"
+          if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
+            echo "   Subscription: ${{ env.AZURE_SUBSCRIPTION_ID }}"
+          fi
           
-          if az group exists --name ${{ env.AZURE_RESOURCE_GROUP }}; then
-            echo "✓ Resource Group ${{ env.AZURE_RESOURCE_GROUP }} already exists"
+          # Check if RG exists with detailed error handling
+          echo "Checking if RG exists..."
+          RG_EXISTS=false
+          if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
+            az group exists --name ${{ env.AZURE_RESOURCE_GROUP }} --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" && RG_EXISTS=true
           else
-            echo "Creating Resource Group: ${{ env.AZURE_RESOURCE_GROUP }} in ${{ env.AZURE_LOCATION }}..."
-            az group create \
-              --name ${{ env.AZURE_RESOURCE_GROUP }} \
-              --location ${{ env.AZURE_LOCATION }}
+            az group exists --name ${{ env.AZURE_RESOURCE_GROUP }} && RG_EXISTS=true
+          fi
+          
+          if [ "$RG_EXISTS" = true ]; then
+            echo "✓ Resource Group ${{ env.AZURE_RESOURCE_GROUP }} already exists"
             
-            if [ $? -ne 0 ]; then
-              echo "❌ Failed to create Resource Group"
-              exit 1
+            # Verify we can actually access it
+            echo "Verifying access to existing RG..."
+            if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
+              az group show --name ${{ env.AZURE_RESOURCE_GROUP }} --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" || {
+                echo "❌ RG exists but is not accessible to current identity"
+                exit 1
+              }
+            else
+              az group show --name ${{ env.AZURE_RESOURCE_GROUP }} || {
+                echo "❌ RG exists but is not accessible to current identity"
+                exit 1
+              }
+            fi
+          else
+            echo "RG does not exist, creating..."
+            
+            # Create with explicit subscription if provided
+            if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
+              az group create \
+                --name ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location ${{ env.AZURE_LOCATION }} \
+                --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" || {
+                echo "❌ Failed to create Resource Group"
+                exit 1
+              }
+            else
+              az group create \
+                --name ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location ${{ env.AZURE_LOCATION }} || {
+                echo "❌ Failed to create Resource Group"
+                exit 1
+              }
             fi
             
             echo "✓ Resource Group created successfully"
           fi
           
-          # Verify resource group is ready
-          echo "Verifying Resource Group is accessible..."
-          az group show --name ${{ env.AZURE_RESOURCE_GROUP }} || {
-            echo "❌ Resource Group not accessible, retrying..."
-            sleep 10
-            az group show --name ${{ env.AZURE_RESOURCE_GROUP }} || exit 1
-          }
-          echo "✓ Resource Group verified and ready"
+          # Final verification with retry
+          echo ""
+          echo "Final verification of Resource Group..."
+          MAX_RETRIES=5
+          RETRY=0
+          
+          while [ $RETRY -lt $MAX_RETRIES ]; do
+            if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
+              az group show --name ${{ env.AZURE_RESOURCE_GROUP }} --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" >/dev/null 2>&1 && break
+            else
+              az group show --name ${{ env.AZURE_RESOURCE_GROUP }} >/dev/null 2>&1 && break
+            fi
+            
+            RETRY=$((RETRY + 1))
+            if [ $RETRY -lt $MAX_RETRIES ]; then
+              WAIT_TIME=$((5 + RETRY * 5))
+              echo "⚠️ RG not yet accessible, retry $RETRY/$MAX_RETRIES (waiting ${WAIT_TIME}s)..."
+              sleep $WAIT_TIME
+            fi
+          done
+          
+          if [ $RETRY -eq $MAX_RETRIES ]; then
+            echo "❌ Failed to verify Resource Group after $MAX_RETRIES attempts"
+            exit 1
+          fi
+          
+          echo "✓ Resource Group verified and accessible"
 
       - name: Check and Create Azure SQL Server
         id: sql
@@ -78,7 +163,14 @@ jobs:
           # Wait for resource group to be fully ready
           sleep 5
           
-          if az sql server show --name $SQL_SERVER_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+          # Check if server exists
+          if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
+            SHOW_CMD="az sql server show --name $SQL_SERVER_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --subscription ${{ env.AZURE_SUBSCRIPTION_ID }}"
+          else
+            SHOW_CMD="az sql server show --name $SQL_SERVER_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }}"
+          fi
+          
+          if eval "$SHOW_CMD" 2>/dev/null; then
             echo "✓ SQL Server $SQL_SERVER_NAME exists"
             echo "sql_server=${SQL_SERVER_NAME}" >> $GITHUB_OUTPUT
             exit 0
@@ -92,12 +184,22 @@ jobs:
           while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
             echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
             
-            az sql server create \
-              --name $SQL_SERVER_NAME \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --location ${{ env.AZURE_LOCATION }} \
-              --admin-user sqladmin \
-              --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1
+            if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
+              az sql server create \
+                --name $SQL_SERVER_NAME \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location ${{ env.AZURE_LOCATION }} \
+                --subscription ${{ env.AZURE_SUBSCRIPTION_ID }} \
+                --admin-user sqladmin \
+                --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1
+            else
+              az sql server create \
+                --name $SQL_SERVER_NAME \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location ${{ env.AZURE_LOCATION }} \
+                --admin-user sqladmin \
+                --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1
+            fi
             
             if [ $? -eq 0 ]; then
               echo "✓ SQL Server created successfully"
@@ -119,12 +221,22 @@ jobs:
           
           # Add firewall rule
           echo "Adding firewall rule for Azure services..."
-          az sql server firewall-rule create \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --server $SQL_SERVER_NAME \
-            --name AllowAzureServices \
-            --start-ip-address 0.0.0.0 \
-            --end-ip-address 0.0.0.0
+          if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
+            az sql server firewall-rule create \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --subscription ${{ env.AZURE_SUBSCRIPTION_ID }} \
+              --server $SQL_SERVER_NAME \
+              --name AllowAzureServices \
+              --start-ip-address 0.0.0.0 \
+              --end-ip-address 0.0.0.0
+          else
+            az sql server firewall-rule create \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --server $SQL_SERVER_NAME \
+              --name AllowAzureServices \
+              --start-ip-address 0.0.0.0 \
+              --end-ip-address 0.0.0.0
+          fi
           
           echo "sql_server=${SQL_SERVER_NAME}" >> $GITHUB_OUTPUT
           echo "✓ SQL Server setup complete"
