@@ -21,11 +21,18 @@ permissions:
   id-token: write
 
 env:
-  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID || '' }}
-  AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP || 'azure-ai-agents' }}
-  AZURE_LOCATION: ${{ secrets.AZURE_LOCATION || 'eastus' }}
-  ACR_NAME: ${{ secrets.ACR_NAME || 'aiagentsacr' }}
-  CONTAINER_ENV: ${{ secrets.CONTAINER_ENV || 'ai-agents-env' }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_RESOURCE_GROUP: azure-ai-agents
+  AZURE_LOCATION: eastus
+  ACR_NAME: aiagentsacr
+  CONTAINER_ENV: ai-agents-env
+  SQL_SERVER_NAME: ai-agents-sql
+  SQL_DATABASE_NAME: geography_index
+  OPENAI_NAME: ai-agents-openai
+  SEARCH_NAME: ai-agents-search
+  STORAGE_NAME: aiagentsstorage
+  RETRIEVER_PORT: 8081
+  ORCHESTRATOR_PORT: 8002
 
 jobs:
   provision-infrastructure:
@@ -45,98 +52,62 @@ jobs:
         run: |
           echo "🔍 Verifying Azure subscription and permissions..."
           
-          # Get current subscription
-          SUBSCRIPTION=$(az account show --query id -o tsv)
-          echo "Current Subscription: $SUBSCRIPTION"
-          
-          # Set subscription explicitly if provided
+          # FIRST: Set subscription explicitly if provided
           if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
-            echo "Setting explicit subscription: ${{ env.AZURE_SUBSCRIPTION_ID }}"
-            az account set --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}"
+            echo "Setting subscription to: ${{ env.AZURE_SUBSCRIPTION_ID }}"
+            az account set --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" || {
+              echo "❌ Failed to set subscription"
+              exit 1
+            }
           fi
           
-          # Verify subscription after setting
-          SUBSCRIPTION=$(az account show --query id -o tsv)
-          echo "Active Subscription: $SUBSCRIPTION"
+          # Verify current subscription
+          CURRENT_SUB=$(az account show --query id -o tsv)
+          echo "Active Subscription: $CURRENT_SUB"
           
           # List all resource groups to verify access
           echo ""
-          echo "Resource Groups in subscription:"
+          echo "Available Resource Groups:"
           az group list --query "[].name" -o table || {
             echo "⚠️ Could not list resource groups"
           }
           
           echo ""
-          echo "✓ Subscription and permissions verified"
+          echo "✓ Subscription context verified"
 
       - name: Create Resource Group (Mandatory - First Step)
         run: |
           echo "📦 Creating/Verifying Resource Group: ${{ env.AZURE_RESOURCE_GROUP }}"
           echo "   Location: ${{ env.AZURE_LOCATION }}"
-          if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
-            echo "   Subscription: ${{ env.AZURE_SUBSCRIPTION_ID }}"
-          fi
+          echo "   Subscription: ${{ env.AZURE_SUBSCRIPTION_ID || 'default' }}"
+          echo ""
           
-          # Check if RG exists with detailed error handling
-          echo "Checking if RG exists..."
-          RG_EXISTS=false
-          if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
-            az group exists --name ${{ env.AZURE_RESOURCE_GROUP }} --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" && RG_EXISTS=true
-          else
-            az group exists --name ${{ env.AZURE_RESOURCE_GROUP }} && RG_EXISTS=true
-          fi
-          
-          if [ "$RG_EXISTS" = true ]; then
+          # Check if RG exists (use az group show, not az group exists)
+          if az group show --name ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
             echo "✓ Resource Group ${{ env.AZURE_RESOURCE_GROUP }} already exists"
-            
-            # Verify we can actually access it
-            echo "Verifying access to existing RG..."
-            if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
-              az group show --name ${{ env.AZURE_RESOURCE_GROUP }} --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" || {
-                echo "❌ RG exists but is not accessible to current identity"
-                exit 1
-              }
-            else
-              az group show --name ${{ env.AZURE_RESOURCE_GROUP }} || {
-                echo "❌ RG exists but is not accessible to current identity"
-                exit 1
-              }
-            fi
           else
-            echo "RG does not exist, creating..."
+            echo "Resource Group does not exist, creating..."
             
-            # Create with explicit subscription if provided
-            if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
-              az group create \
-                --name ${{ env.AZURE_RESOURCE_GROUP }} \
-                --location ${{ env.AZURE_LOCATION }} \
-                --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" || {
-                echo "❌ Failed to create Resource Group"
-                exit 1
-              }
-            else
-              az group create \
-                --name ${{ env.AZURE_RESOURCE_GROUP }} \
-                --location ${{ env.AZURE_LOCATION }} || {
-                echo "❌ Failed to create Resource Group"
-                exit 1
-              }
-            fi
+            az group create \
+              --name ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location ${{ env.AZURE_LOCATION }} || {
+              echo "❌ Failed to create Resource Group"
+              exit 1
+            }
             
             echo "✓ Resource Group created successfully"
           fi
           
-          # Final verification with retry
+          # Final verification with retry (use az group show directly)
           echo ""
-          echo "Final verification of Resource Group..."
+          echo "Verifying Resource Group is accessible..."
           MAX_RETRIES=5
           RETRY=0
           
           while [ $RETRY -lt $MAX_RETRIES ]; do
-            if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
-              az group show --name ${{ env.AZURE_RESOURCE_GROUP }} --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" >/dev/null 2>&1 && break
-            else
-              az group show --name ${{ env.AZURE_RESOURCE_GROUP }} >/dev/null 2>&1 && break
+            if az group show --name ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+              echo "✓ Resource Group verified and accessible"
+              exit 0
             fi
             
             RETRY=$((RETRY + 1))
@@ -147,59 +118,38 @@ jobs:
             fi
           done
           
-          if [ $RETRY -eq $MAX_RETRIES ]; then
-            echo "❌ Failed to verify Resource Group after $MAX_RETRIES attempts"
-            exit 1
-          fi
-          
-          echo "✓ Resource Group verified and accessible"
+          echo "❌ Failed to verify Resource Group after $MAX_RETRIES attempts"
+          exit 1
 
       - name: Check and Create Azure SQL Server
         id: sql
         run: |
-          echo "🗄️ Checking Azure SQL Server..."
-          SQL_SERVER_NAME="${{ secrets.AZURE_SQL_SERVER_NAME || format('ai-agents-sql-{0}', github.run_number) }}"
+          echo "🗄️ Checking Azure SQL Server: ${{ env.SQL_SERVER_NAME }}"
           
           # Wait for resource group to be fully ready
           sleep 5
           
           # Check if server exists
-          if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
-            SHOW_CMD="az sql server show --name $SQL_SERVER_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --subscription ${{ env.AZURE_SUBSCRIPTION_ID }}"
-          else
-            SHOW_CMD="az sql server show --name $SQL_SERVER_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }}"
-          fi
-          
-          if eval "$SHOW_CMD" 2>/dev/null; then
-            echo "✓ SQL Server $SQL_SERVER_NAME exists"
-            echo "sql_server=${SQL_SERVER_NAME}" >> $GITHUB_OUTPUT
+          if az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ SQL Server ${{ env.SQL_SERVER_NAME }} exists"
+            echo "sql_server=${{ env.SQL_SERVER_NAME }}" >> $GITHUB_OUTPUT
             exit 0
           fi
           
-          echo "Creating SQL Server $SQL_SERVER_NAME in resource group ${{ env.AZURE_RESOURCE_GROUP }}..."
+          echo "Creating SQL Server ${{ env.SQL_SERVER_NAME }}..."
           
-          # Try to create SQL Server with retry logic
+          # Create SQL Server with retry logic
           MAX_ATTEMPTS=3
           ATTEMPT=1
           while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
             echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
             
-            if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
-              az sql server create \
-                --name $SQL_SERVER_NAME \
-                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-                --location ${{ env.AZURE_LOCATION }} \
-                --subscription ${{ env.AZURE_SUBSCRIPTION_ID }} \
-                --admin-user sqladmin \
-                --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1
-            else
-              az sql server create \
-                --name $SQL_SERVER_NAME \
-                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-                --location ${{ env.AZURE_LOCATION }} \
-                --admin-user sqladmin \
-                --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1
-            fi
+            az sql server create \
+              --name ${{ env.SQL_SERVER_NAME }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location ${{ env.AZURE_LOCATION }} \
+              --admin-user sqladmin \
+              --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1
             
             if [ $? -eq 0 ]; then
               echo "✓ SQL Server created successfully"
@@ -221,37 +171,26 @@ jobs:
           
           # Add firewall rule
           echo "Adding firewall rule for Azure services..."
-          if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
-            az sql server firewall-rule create \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --subscription ${{ env.AZURE_SUBSCRIPTION_ID }} \
-              --server $SQL_SERVER_NAME \
-              --name AllowAzureServices \
-              --start-ip-address 0.0.0.0 \
-              --end-ip-address 0.0.0.0
-          else
-            az sql server firewall-rule create \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --server $SQL_SERVER_NAME \
-              --name AllowAzureServices \
-              --start-ip-address 0.0.0.0 \
-              --end-ip-address 0.0.0.0
-          fi
+          az sql server firewall-rule create \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --server ${{ env.SQL_SERVER_NAME }} \
+            --name AllowAzureServices \
+            --start-ip-address 0.0.0.0 \
+            --end-ip-address 0.0.0.0
           
-          echo "sql_server=${SQL_SERVER_NAME}" >> $GITHUB_OUTPUT
+          echo "sql_server=${{ env.SQL_SERVER_NAME }}" >> $GITHUB_OUTPUT
           echo "✓ SQL Server setup complete"
 
       - name: Check and Create SQL Database
         run: |
-          echo "📊 Checking SQL Database..."
-          SQL_SERVER="${{ steps.sql.outputs.sql_server }}"
+          echo "📊 Checking SQL Database: ${{ env.SQL_DATABASE_NAME }}"
           
-          if az sql db show --name geography_index --server $SQL_SERVER --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
-            echo "✓ Database geography_index exists"
+          if az sql db show --name ${{ env.SQL_DATABASE_NAME }} --server ${{ steps.sql.outputs.sql_server }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ Database ${{ env.SQL_DATABASE_NAME }} exists"
             exit 0
           fi
           
-          echo "Creating database geography_index..."
+          echo "Creating database ${{ env.SQL_DATABASE_NAME }}..."
           
           MAX_ATTEMPTS=3
           ATTEMPT=1
@@ -259,8 +198,8 @@ jobs:
             echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
             
             az sql db create \
-              --name geography_index \
-              --server $SQL_SERVER \
+              --name ${{ env.SQL_DATABASE_NAME }} \
+              --server ${{ steps.sql.outputs.sql_server }} \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --edition Basic \
               --compute-model Serverless \
@@ -285,15 +224,14 @@ jobs:
 
       - name: Check and Create Azure OpenAI
         run: |
-          echo "🤖 Checking Azure OpenAI..."
-          OPENAI_NAME="${{ secrets.AZURE_OPENAI_NAME || 'ai-agents-openai' }}"
+          echo "🤖 Checking Azure OpenAI: ${{ env.OPENAI_NAME }}"
           
-          if az cognitiveservices account show --name $OPENAI_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
-            echo "✓ Azure OpenAI $OPENAI_NAME exists"
+          if az cognitiveservices account show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ Azure OpenAI ${{ env.OPENAI_NAME }} exists"
             exit 0
           fi
           
-          echo "Creating Azure OpenAI $OPENAI_NAME..."
+          echo "Creating Azure OpenAI ${{ env.OPENAI_NAME }}..."
           
           MAX_ATTEMPTS=2
           ATTEMPT=1
@@ -301,7 +239,7 @@ jobs:
             echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
             
             az cognitiveservices account create \
-              --name $OPENAI_NAME \
+              --name ${{ env.OPENAI_NAME }} \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --location ${{ env.AZURE_LOCATION }} \
               --kind OpenAI \
@@ -329,7 +267,7 @@ jobs:
           sleep 10
           
           az cognitiveservices account deployment create \
-            --name $OPENAI_NAME \
+            --name ${{ env.OPENAI_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --deployment-name gpt-4o \
             --model-name gpt-4o \
@@ -342,15 +280,14 @@ jobs:
 
       - name: Check and Create AI Search
         run: |
-          echo "🔍 Checking Azure AI Search..."
-          SEARCH_NAME="${{ secrets.AZURE_SEARCH_NAME || 'ai-agents-search' }}"
+          echo "🔍 Checking Azure AI Search: ${{ env.SEARCH_NAME }}"
           
-          if az search service show --name $SEARCH_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
-            echo "✓ AI Search $SEARCH_NAME exists"
+          if az search service show --name ${{ env.SEARCH_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ AI Search ${{ env.SEARCH_NAME }} exists"
             exit 0
           fi
           
-          echo "Creating AI Search $SEARCH_NAME..."
+          echo "Creating AI Search ${{ env.SEARCH_NAME }}..."
           
           MAX_ATTEMPTS=2
           ATTEMPT=1
@@ -358,7 +295,7 @@ jobs:
             echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
             
             az search service create \
-              --name $SEARCH_NAME \
+              --name ${{ env.SEARCH_NAME }} \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --location ${{ env.AZURE_LOCATION }} \
               --sku Basic 2>&1
@@ -381,13 +318,12 @@ jobs:
 
       - name: Check and Create Storage Account
         run: |
-          echo "💾 Checking Storage Account..."
-          STORAGE_NAME="${{ secrets.AZURE_STORAGE_NAME || format('aiagentsstorage{0}', github.run_number) }}"
+          echo "💾 Checking Storage Account: ${{ env.STORAGE_NAME }}"
           
-          if az storage account show --name $STORAGE_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
-            echo "✓ Storage Account $STORAGE_NAME exists"
+          if az storage account show --name ${{ env.STORAGE_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ Storage Account ${{ env.STORAGE_NAME }} exists"
           else
-            echo "Creating Storage Account $STORAGE_NAME..."
+            echo "Creating Storage Account ${{ env.STORAGE_NAME }}..."
             
             MAX_ATTEMPTS=2
             ATTEMPT=1
@@ -395,7 +331,7 @@ jobs:
               echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
               
               az storage account create \
-                --name $STORAGE_NAME \
+                --name ${{ env.STORAGE_NAME }} \
                 --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
                 --location ${{ env.AZURE_LOCATION }} \
                 --sku Standard_LRS 2>&1
@@ -420,7 +356,7 @@ jobs:
           fi
           
           echo "Creating blob container..."
-          STORAGE_CONN=$(az storage account show-connection-string --name $STORAGE_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query connectionString -o tsv)
+          STORAGE_CONN=$(az storage account show-connection-string --name ${{ env.STORAGE_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query connectionString -o tsv)
           
           az storage container create --name documents --connection-string "$STORAGE_CONN" 2>/dev/null || echo "✓ Container already exists"
           echo "✓ Storage Account ready"
@@ -542,8 +478,8 @@ jobs:
           echo "🗄️ Setting up SQL database schema..."
           python infra/setup_azure_sql.py
         env:
-          AZURE_SQL_SERVER: ${{ needs.provision-infrastructure.outputs.sql_server }}.database.windows.net
-          AZURE_SQL_DATABASE: geography_index
+          AZURE_SQL_SERVER: ${{ env.SQL_SERVER_NAME }}.database.windows.net
+          AZURE_SQL_DATABASE: ${{ env.SQL_DATABASE_NAME }}
           AZURE_SQL_USERNAME: sqladmin
           AZURE_SQL_PASSWORD: ${{ secrets.AZURE_SQL_PASSWORD }}
 
@@ -646,7 +582,7 @@ jobs:
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --environment ${{ env.CONTAINER_ENV }} \
               --image ${{ needs.build-and-push-images.outputs.retriever_image }} \
-              --target-port 8081 \
+              --target-port ${{ env.RETRIEVER_PORT }} \
               --ingress external \
               --min-replicas 0 \
               --max-replicas 5 \
@@ -713,7 +649,7 @@ jobs:
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --environment ${{ env.CONTAINER_ENV }} \
               --image ${{ needs.build-and-push-images.outputs.orchestrator_image }} \
-              --target-port 8002 \
+              --target-port ${{ env.ORCHESTRATOR_PORT }} \
               --ingress external \
               --min-replicas 1 \
               --max-replicas 10 \
@@ -727,7 +663,7 @@ jobs:
                 AZURE_OPENAI_API_KEY=secretref:openai-key \
                 AZURE_OPENAI_DEPLOYMENT=gpt-4o \
                 AZURE_SQL_SERVER=secretref:sql-server \
-                AZURE_SQL_DATABASE=geography_index \
+                AZURE_SQL_DATABASE=${{ env.SQL_DATABASE_NAME }} \
                 AZURE_SQL_USERNAME=sqladmin \
                 AZURE_SQL_PASSWORD=secretref:sql-password \
                 RETRIEVER_URL=${{ needs.deploy-retriever.outputs.retriever_url }} \
