@@ -288,20 +288,20 @@ jobs:
             exit 1
           fi
           
-          echo "Deploying GPT-4o model..."
+          echo "Deploying GPT-4 model..."
           sleep 10
           
           az cognitiveservices account deployment create \
             --name ${{ env.OPENAI_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --deployment-name gpt-4o \
-            --model-name gpt-4o \
-            --model-version "2024-08-06" \
+            --deployment-name gpt-4 \
+            --model-name gpt-4 \
+            --model-version "turbo-2024-04-09" \
             --model-format OpenAI \
             --sku-capacity 10 \
             --sku-name Standard
           
-          echo "✓ Azure OpenAI ready with GPT-4o deployment"
+          echo "✓ Azure OpenAI ready with GPT-4 deployment"
 
       - name: Check and Create AI Search
         run: |
@@ -619,7 +619,7 @@ jobs:
               --env-vars \
                 AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
                 AZURE_OPENAI_API_KEY=secretref:openai-key \
-                AZURE_OPENAI_DEPLOYMENT=gpt-4o \
+                AZURE_OPENAI_DEPLOYMENT=gpt-4 \
                 AZURE_SEARCH_ENDPOINT=secretref:search-endpoint \
                 AZURE_SEARCH_KEY=secretref:search-key \
                 AZURE_SEARCH_INDEX=documents \
@@ -686,7 +686,7 @@ jobs:
               --env-vars \
                 AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
                 AZURE_OPENAI_API_KEY=secretref:openai-key \
-                AZURE_OPENAI_DEPLOYMENT=gpt-4o \
+                AZURE_OPENAI_DEPLOYMENT=gpt-4 \
                 AZURE_SQL_SERVER=secretref:sql-server \
                 AZURE_SQL_DATABASE=${{ env.SQL_DATABASE_NAME }} \
                 AZURE_SQL_USERNAME=sqladmin \
