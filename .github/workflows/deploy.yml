@@ -40,25 +40,34 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Check if Resource Group exists
-        id: check_rg
+      - name: Create Resource Group (Mandatory - First Step)
         run: |
+          echo "📦 Creating/Verifying Resource Group..."
+          
           if az group exists --name ${{ env.AZURE_RESOURCE_GROUP }}; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "✓ Resource Group ${{ env.AZURE_RESOURCE_GROUP }} exists"
+            echo "✓ Resource Group ${{ env.AZURE_RESOURCE_GROUP }} already exists"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
-            echo "ℹ️ Resource Group ${{ env.AZURE_RESOURCE_GROUP }} does not exist"
+            echo "Creating Resource Group: ${{ env.AZURE_RESOURCE_GROUP }} in ${{ env.AZURE_LOCATION }}..."
+            az group create \
+              --name ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location ${{ env.AZURE_LOCATION }}
+            
+            if [ $? -ne 0 ]; then
+              echo "❌ Failed to create Resource Group"
+              exit 1
+            fi
+            
+            echo "✓ Resource Group created successfully"
           fi
-
-      - name: Create Resource Group
-        if: steps.check_rg.outputs.exists == 'false'
-        run: |
-          echo "📦 Creating Resource Group..."
-          az group create \
-            --name ${{ env.AZURE_RESOURCE_GROUP }} \
-            --location ${{ env.AZURE_LOCATION }}
-          echo "✓ Resource Group created"
+          
+          # Verify resource group is ready
+          echo "Verifying Resource Group is accessible..."
+          az group show --name ${{ env.AZURE_RESOURCE_GROUP }} || {
+            echo "❌ Resource Group not accessible, retrying..."
+            sleep 10
+            az group show --name ${{ env.AZURE_RESOURCE_GROUP }} || exit 1
+          }
+          echo "✓ Resource Group verified and ready"
 
       - name: Check and Create Azure SQL Server
         id: sql
@@ -66,47 +75,101 @@ jobs:
           echo "🗄️ Checking Azure SQL Server..."
           SQL_SERVER_NAME="${{ secrets.AZURE_SQL_SERVER_NAME || format('ai-agents-sql-{0}', github.run_number) }}"
           
+          # Wait for resource group to be fully ready
+          sleep 5
+          
           if az sql server show --name $SQL_SERVER_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
             echo "✓ SQL Server $SQL_SERVER_NAME exists"
-          else
-            echo "Creating SQL Server $SQL_SERVER_NAME..."
+            echo "sql_server=${SQL_SERVER_NAME}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "Creating SQL Server $SQL_SERVER_NAME in resource group ${{ env.AZURE_RESOURCE_GROUP }}..."
+          
+          # Try to create SQL Server with retry logic
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+            
             az sql server create \
               --name $SQL_SERVER_NAME \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --location ${{ env.AZURE_LOCATION }} \
               --admin-user sqladmin \
-              --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}"
+              --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1
             
-            # Allow Azure services
-            az sql server firewall-rule create \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --server $SQL_SERVER_NAME \
-              --name AllowAzureServices \
-              --start-ip-address 0.0.0.0 \
-              --end-ip-address 0.0.0.0
+            if [ $? -eq 0 ]; then
+              echo "✓ SQL Server created successfully"
+              break
+            fi
             
-            echo "✓ SQL Server created"
+            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+              echo "⚠️ Creation failed, retrying in 15 seconds..."
+              sleep 15
+            fi
+            
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          
+          if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+            echo "❌ Failed to create SQL Server after $MAX_ATTEMPTS attempts"
+            exit 1
           fi
           
+          # Add firewall rule
+          echo "Adding firewall rule for Azure services..."
+          az sql server firewall-rule create \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --server $SQL_SERVER_NAME \
+            --name AllowAzureServices \
+            --start-ip-address 0.0.0.0 \
+            --end-ip-address 0.0.0.0
+          
           echo "sql_server=${SQL_SERVER_NAME}" >> $GITHUB_OUTPUT
+          echo "✓ SQL Server setup complete"
 
       - name: Check and Create SQL Database
         run: |
           echo "📊 Checking SQL Database..."
-          if az sql db show --name geography_index --server ${{ steps.sql.outputs.sql_server }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+          SQL_SERVER="${{ steps.sql.outputs.sql_server }}"
+          
+          if az sql db show --name geography_index --server $SQL_SERVER --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
             echo "✓ Database geography_index exists"
-          else
-            echo "Creating database geography_index..."
+            exit 0
+          fi
+          
+          echo "Creating database geography_index..."
+          
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+            
             az sql db create \
               --name geography_index \
-              --server ${{ steps.sql.outputs.sql_server }} \
+              --server $SQL_SERVER \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --edition Basic \
               --compute-model Serverless \
               --family Gen5 \
-              --capacity 1
-            echo "✓ Database created"
-          fi
+              --capacity 1 2>&1
+            
+            if [ $? -eq 0 ]; then
+              echo "✓ Database created successfully"
+              exit 0
+            fi
+            
+            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+              echo "⚠️ Creation failed, retrying in 10 seconds..."
+              sleep 10
+            fi
+            
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          
+          echo "❌ Failed to create database after $MAX_ATTEMPTS attempts"
+          exit 1
 
       - name: Check and Create Azure OpenAI
         run: |
@@ -115,29 +178,55 @@ jobs:
           
           if az cognitiveservices account show --name $OPENAI_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
             echo "✓ Azure OpenAI $OPENAI_NAME exists"
-          else
-            echo "Creating Azure OpenAI $OPENAI_NAME..."
+            exit 0
+          fi
+          
+          echo "Creating Azure OpenAI $OPENAI_NAME..."
+          
+          MAX_ATTEMPTS=2
+          ATTEMPT=1
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+            
             az cognitiveservices account create \
               --name $OPENAI_NAME \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --location ${{ env.AZURE_LOCATION }} \
               --kind OpenAI \
-              --sku S0
+              --sku S0 2>&1
             
-            # Deploy GPT-4o model
-            echo "Deploying GPT-4o model..."
-            az cognitiveservices account deployment create \
-              --name $OPENAI_NAME \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --deployment-name gpt-4o \
-              --model-name gpt-4o \
-              --model-version "2024-08-06" \
-              --model-format OpenAI \
-              --sku-capacity 10 \
-              --sku-name Standard
+            if [ $? -eq 0 ]; then
+              echo "✓ Azure OpenAI created"
+              break
+            fi
             
-            echo "✓ Azure OpenAI created with GPT-4o deployment"
+            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+              echo "⚠️ Creation failed, retrying in 20 seconds..."
+              sleep 20
+            fi
+            
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          
+          if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+            echo "❌ Failed to create Azure OpenAI"
+            exit 1
           fi
+          
+          echo "Deploying GPT-4o model..."
+          sleep 10
+          
+          az cognitiveservices account deployment create \
+            --name $OPENAI_NAME \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --deployment-name gpt-4o \
+            --model-name gpt-4o \
+            --model-version "2024-08-06" \
+            --model-format OpenAI \
+            --sku-capacity 10 \
+            --sku-name Standard
+          
+          echo "✓ Azure OpenAI ready with GPT-4o deployment"
 
       - name: Check and Create AI Search
         run: |
@@ -146,15 +235,37 @@ jobs:
           
           if az search service show --name $SEARCH_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
             echo "✓ AI Search $SEARCH_NAME exists"
-          else
-            echo "Creating AI Search $SEARCH_NAME..."
+            exit 0
+          fi
+          
+          echo "Creating AI Search $SEARCH_NAME..."
+          
+          MAX_ATTEMPTS=2
+          ATTEMPT=1
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+            
             az search service create \
               --name $SEARCH_NAME \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --location ${{ env.AZURE_LOCATION }} \
-              --sku Basic
-            echo "✓ AI Search created"
-          fi
+              --sku Basic 2>&1
+            
+            if [ $? -eq 0 ]; then
+              echo "✓ AI Search created"
+              exit 0
+            fi
+            
+            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+              echo "⚠️ Creation failed, retrying in 15 seconds..."
+              sleep 15
+            fi
+            
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          
+          echo "❌ Failed to create AI Search"
+          exit 1
 
       - name: Check and Create Storage Account
         run: |
@@ -165,18 +276,42 @@ jobs:
             echo "✓ Storage Account $STORAGE_NAME exists"
           else
             echo "Creating Storage Account $STORAGE_NAME..."
-            az storage account create \
-              --name $STORAGE_NAME \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --location ${{ env.AZURE_LOCATION }} \
-              --sku Standard_LRS
             
-            # Create container
-            STORAGE_CONN=$(az storage account show-connection-string --name $STORAGE_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query connectionString -o tsv)
-            az storage container create --name documents --connection-string "$STORAGE_CONN"
+            MAX_ATTEMPTS=2
+            ATTEMPT=1
+            while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+              echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+              
+              az storage account create \
+                --name $STORAGE_NAME \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location ${{ env.AZURE_LOCATION }} \
+                --sku Standard_LRS 2>&1
+              
+              if [ $? -eq 0 ]; then
+                echo "✓ Storage Account created"
+                break
+              fi
+              
+              if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+                echo "⚠️ Creation failed, retrying in 10 seconds..."
+                sleep 10
+              fi
+              
+              ATTEMPT=$((ATTEMPT + 1))
+            done
             
-            echo "✓ Storage Account and container created"
+            if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+              echo "❌ Failed to create Storage Account"
+              exit 1
+            fi
           fi
+          
+          echo "Creating blob container..."
+          STORAGE_CONN=$(az storage account show-connection-string --name $STORAGE_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query connectionString -o tsv)
+          
+          az storage container create --name documents --connection-string "$STORAGE_CONN" 2>/dev/null || echo "✓ Container already exists"
+          echo "✓ Storage Account ready"
 
       - name: Check and Create Container Registry
         id: infra
@@ -187,17 +322,41 @@ jobs:
             echo "✓ ACR ${{ env.ACR_NAME }} exists"
           else
             echo "Creating ACR ${{ env.ACR_NAME }}..."
-            az acr create \
-              --name ${{ env.ACR_NAME }} \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --location ${{ env.AZURE_LOCATION }} \
-              --sku Basic \
-              --admin-enabled true
-            echo "✓ ACR created"
+            
+            MAX_ATTEMPTS=2
+            ATTEMPT=1
+            while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+              echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+              
+              az acr create \
+                --name ${{ env.ACR_NAME }} \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location ${{ env.AZURE_LOCATION }} \
+                --sku Basic \
+                --admin-enabled true 2>&1
+              
+              if [ $? -eq 0 ]; then
+                echo "✓ ACR created"
+                break
+              fi
+              
+              if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+                echo "⚠️ Creation failed, retrying in 10 seconds..."
+                sleep 10
+              fi
+              
+              ATTEMPT=$((ATTEMPT + 1))
+            done
+            
+            if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+              echo "❌ Failed to create ACR"
+              exit 1
+            fi
           fi
           
           ACR_SERVER=$(az acr show --name ${{ env.ACR_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query loginServer -o tsv)
           echo "acr_login_server=${ACR_SERVER}" >> $GITHUB_OUTPUT
+          echo "✓ ACR ready: $ACR_SERVER"
 
       - name: Check and Create Container Apps Environment
         run: |
@@ -205,14 +364,36 @@ jobs:
           
           if az containerapp env show --name ${{ env.CONTAINER_ENV }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
             echo "✓ Container Apps Environment ${{ env.CONTAINER_ENV }} exists"
-          else
-            echo "Creating Container Apps Environment ${{ env.CONTAINER_ENV }}..."
+            exit 0
+          fi
+          
+          echo "Creating Container Apps Environment ${{ env.CONTAINER_ENV }}..."
+          
+          MAX_ATTEMPTS=2
+          ATTEMPT=1
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+            
             az containerapp env create \
               --name ${{ env.CONTAINER_ENV }} \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --location ${{ env.AZURE_LOCATION }}
-            echo "✓ Container Apps Environment created"
-          fi
+              --location ${{ env.AZURE_LOCATION }} 2>&1
+            
+            if [ $? -eq 0 ]; then
+              echo "✓ Container Apps Environment created"
+              exit 0
+            fi
+            
+            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+              echo "⚠️ Creation failed, retrying in 30 seconds..."
+              sleep 30
+            fi
+            
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          
+          echo "❌ Failed to create Container Apps Environment"
+          exit 1
 
       - name: 🎉 Infrastructure Provisioning Complete
         run: |
