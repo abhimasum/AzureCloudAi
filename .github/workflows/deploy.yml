@@ -225,10 +225,11 @@ jobs:
               --name ${{ env.SQL_DATABASE_NAME }} \
               --server ${{ steps.sql.outputs.sql_server }} \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --edition Basic \
+              --edition GeneralPurpose \
               --compute-model Serverless \
               --family Gen5 \
-              --capacity 1 2>&1
+              --capacity 2 \
+              --auto-pause-delay 60 2>&1
             
             if [ $? -eq 0 ]; then
               echo "✓ Database created successfully"
