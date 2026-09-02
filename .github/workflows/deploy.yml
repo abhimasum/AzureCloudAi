@@ -251,27 +251,40 @@ jobs:
         run: |
           echo "🔥 Checking for soft-deleted OpenAI resources..."
           
-          # List all deleted cognitive services accounts
-          DELETED_RESOURCES=$(az cognitiveservices account list-deleted --query "[?resourceGroup=='${{ env.AZURE_RESOURCE_GROUP }}'].{name:name, location:location}" -o json)
+          # Check if resource already exists (healthy state)
+          if az cognitiveservices account show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ Resource exists in healthy state, skipping purge"
+            exit 0
+          fi
           
-          echo "Deleted resources: $DELETED_RESOURCES"
+          echo "Resource appears to be soft-deleted, initiating purge..."
           
-          if [ "$DELETED_RESOURCES" != "[]" ]; then
-            echo "Found soft-deleted OpenAI resources, purging..."
-            
-            # Try to purge the specific resource
+          # Use REST API to purge soft-deleted resource
+          TOKEN=$(az account get-access-token --query accessToken -o tsv)
+          RESOURCE_ID="/subscriptions/${{ env.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ env.AZURE_RESOURCE_GROUP }}/providers/Microsoft.CognitiveServices/accounts/${{ env.OPENAI_NAME }}"
+          
+          echo "Purging via REST API: $RESOURCE_ID"
+          
+          # Attempt REST API purge
+          curl -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://management.azure.com${RESOURCE_ID}/purge?api-version=2017-12-01" 2>&1 || echo "REST purge attempt completed"
+          
+          # Also try CLI purge multiple times
+          for i in {1..3}; do
+            echo "CLI purge attempt $i of 3..."
             az cognitiveservices account purge \
               --name ${{ env.OPENAI_NAME }} \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --location ${{ env.AZURE_LOCATION }} 2>&1 || echo "Purge attempt completed (may already be purged)"
-            
-            echo "Waiting 30 seconds for purge to complete..."
-            sleep 30
-            
-            echo "✓ Soft-deleted resources purged"
-          else
-            echo "✓ No soft-deleted resources found"
-          fi
+              --location ${{ env.AZURE_LOCATION }} 2>&1 || true
+            sleep 20
+          done
+          
+          echo "Waiting 60 seconds for purge to finalize..."
+          sleep 60
+          
+          echo "✓ Purge sequence completed"
 
       - name: Check and Create Azure OpenAI
         run: |
@@ -284,35 +297,47 @@ jobs:
           
           echo "Creating Azure OpenAI ${{ env.OPENAI_NAME }}..."
           
-          MAX_ATTEMPTS=2
+          MAX_ATTEMPTS=3
           ATTEMPT=1
           while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
             echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
             
-            az cognitiveservices account create \
-              --name ${{ env.OPENAI_NAME }} \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --location ${{ env.AZURE_LOCATION }} \
-              --kind OpenAI \
-              --sku S0 2>&1
+            # First attempt: try creating normally
+            if [ $ATTEMPT -eq 1 ]; then
+              az cognitiveservices account create \
+                --name ${{ env.OPENAI_NAME }} \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location ${{ env.AZURE_LOCATION }} \
+                --kind OpenAI \
+                --sku S0 2>&1 && break
+            fi
             
-            if [ $? -eq 0 ]; then
-              echo "✓ Azure OpenAI created"
-              break
+            # Subsequent attempts: try with restore flag (for soft-deleted resources)
+            if [ $ATTEMPT -gt 1 ]; then
+              echo "Attempting with restore flag (soft-deleted resource recovery)..."
+              az cognitiveservices account create \
+                --name ${{ env.OPENAI_NAME }} \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location ${{ env.AZURE_LOCATION }} \
+                --kind OpenAI \
+                --sku S0 \
+                --restore 2>&1 && break
             fi
             
             if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
-              echo "⚠️ Creation failed, retrying in 20 seconds..."
-              sleep 20
+              echo "⚠️ Attempt $ATTEMPT failed, waiting 30 seconds before retry..."
+              sleep 30
             fi
             
             ATTEMPT=$((ATTEMPT + 1))
           done
           
           if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
-            echo "❌ Failed to create Azure OpenAI"
+            echo "❌ Failed to create/restore Azure OpenAI after $MAX_ATTEMPTS attempts"
             exit 1
           fi
+          
+          echo "✓ Azure OpenAI created/restored successfully"
           
           echo "Deploying GPT-4 model..."
           sleep 10
