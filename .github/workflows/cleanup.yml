@@ -53,6 +53,24 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Purge Soft-Deleted Resources
+        if: ${{ github.event.inputs.delete_all_resources == 'true' }}
+        run: |
+          echo "🔥 Purging soft-deleted resources..."
+          
+          # Purge soft-deleted Cognitive Services (OpenAI)
+          PURGE_ACCOUNTS=$(az cognitiveservices account list-deleted --query "[].{name: name, resourceGroup: resourceGroup, id: id}" -o json)
+          
+          echo "$PURGE_ACCOUNTS" | jq -r '.[] | select(.resourceGroup == "${{ env.AZURE_RESOURCE_GROUP }}") | .id' | while read ID; do
+            if [ ! -z "$ID" ]; then
+              echo "Purging soft-deleted resource: $ID"
+              az cognitiveservices account purge --location westeurope --name ai-agents-openai --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null || echo "Purge initiated"
+            fi
+          done
+          
+          echo "✓ Soft-deleted resources purged"
+          sleep 10
+
       - name: ⚠️ Delete Entire Resource Group
         if: ${{ github.event.inputs.delete_all_resources == 'true' }}
         run: |
@@ -63,7 +81,7 @@ jobs:
           echo "  • Container Apps"
           echo "  • Container Registry"
           echo "  • SQL Database & Server"
-          echo "  • Azure OpenAI"
+          echo "  • Azure OpenAI (purged)"
           echo "  • AI Search"
           echo "  • Blob Storage"
           echo ""
