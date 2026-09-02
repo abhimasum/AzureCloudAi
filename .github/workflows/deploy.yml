@@ -75,6 +75,30 @@ jobs:
           echo ""
           echo "✓ Subscription context verified"
 
+      - name: Register Required Resource Providers
+        run: |
+          echo "📋 Registering required Azure resource providers..."
+          
+          PROVIDERS=(
+            "Microsoft.Sql"
+            "Microsoft.CognitiveServices"
+            "Microsoft.Search"
+            "Microsoft.Storage"
+            "Microsoft.App"
+            "Microsoft.ContainerRegistry"
+          )
+          
+          for provider in "${PROVIDERS[@]}"; do
+            echo "Registering $provider..."
+            az provider register --namespace "$provider" --accept-terms || echo "Already registered or no action needed"
+          done
+          
+          echo ""
+          echo "Waiting for provider registration (up to 2 minutes)..."
+          sleep 120
+          
+          echo "✓ Resource providers registered"
+
       - name: Create Resource Group (Mandatory - First Step)
         run: |
           echo "📦 Creating/Verifying Resource Group: ${{ env.AZURE_RESOURCE_GROUP }}"
