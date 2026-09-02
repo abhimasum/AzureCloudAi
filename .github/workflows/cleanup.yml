@@ -17,22 +17,22 @@ on:
         description: 'Delete AI Search index'
         required: true
         type: boolean
-        default: false
+        default: true
       delete_sql_data:
         description: 'Delete SQL database data (⚠️ Destructive)'
         required: true
         type: boolean
-        default: false
+        default: true
       delete_storage:
         description: 'Delete Blob Storage documents'
         required: true
         type: boolean
-        default: false
+        default: true
       delete_all_resources:
         description: '⚠️ DELETE ENTIRE RESOURCE GROUP (everything)'
         required: true
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
