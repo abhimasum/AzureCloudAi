@@ -347,7 +347,7 @@ jobs:
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --deployment-name gpt-35-turbo \
             --model-name gpt-35-turbo \
-            --model-version "0613" \
+            --model-version "1106" \
             --model-format OpenAI \
             --sku-capacity 10 \
             --sku-name Standard
