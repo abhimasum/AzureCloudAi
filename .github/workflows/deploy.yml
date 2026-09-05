@@ -363,16 +363,28 @@ jobs:
           echo "✓ Azure OpenAI ready with GPT-4o deployment"
           
           echo "Fetching Azure OpenAI endpoint and key for downstream jobs..."
-          OPENAI_ENDPOINT=$(az cognitiveservices account show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.endpoint -o tsv)
-          OPENAI_KEY=$(az cognitiveservices account keys list --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query key1 -o tsv)
+          OPENAI_ENDPOINT=$(az cognitiveservices account show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.endpoint -o tsv 2>&1)
           
-          # Validate outputs are not empty
           if [ -z "$OPENAI_ENDPOINT" ]; then
-            echo "❌ ERROR: OPENAI_ENDPOINT is empty!"
+            echo "❌ Failed to fetch OpenAI endpoint. Response:"
+            echo "$OPENAI_ENDPOINT"
             exit 1
           fi
-          if [ -z "$OPENAI_KEY" ]; then
-            echo "❌ ERROR: OPENAI_KEY is empty!"
+          
+          # Try the correct command to get keys
+          OPENAI_KEY=$(az cognitiveservices account keys show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query key1 -o tsv 2>&1)
+          
+          if [ -z "$OPENAI_KEY" ] || [[ "$OPENAI_KEY" == *"ERROR"* ]] || [[ "$OPENAI_KEY" == *"error"* ]]; then
+            echo "⚠️ First attempt failed with 'keys show', trying 'keys list'..."
+            OPENAI_KEY=$(az cognitiveservices account keys list --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query key1 -o tsv 2>&1)
+          fi
+          
+          if [ -z "$OPENAI_KEY" ] || [[ "$OPENAI_KEY" == *"ERROR"* ]] || [[ "$OPENAI_KEY" == *"error"* ]]; then
+            echo "❌ Failed to fetch OpenAI key. Response:"
+            echo "$OPENAI_KEY"
+            echo ""
+            echo "Debugging: List all keys for ${{ env.OPENAI_NAME }}"
+            az cognitiveservices account keys show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>&1
             exit 1
           fi
           
