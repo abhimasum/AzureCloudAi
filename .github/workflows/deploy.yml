@@ -413,9 +413,12 @@ jobs:
           fi
           
           echo "✓ Endpoint retrieved: ${OPENAI_ENDPOINT:0:30}..."
-          echo "::add-mask::${OPENAI_KEY}"
-          echo "✓ Key retrieved (masked)"
+          echo "✓ Key retrieved"
           
+          # NOTE: Do NOT ::add-mask:: this value here - GitHub Actions cannot
+          # propagate a masked value through job outputs (needs.*.outputs.*
+          # silently resolves to an empty string in consuming jobs). Consumers
+          # of this output mask it locally instead, right after reading it.
           echo "endpoint=${OPENAI_ENDPOINT}" >> $GITHUB_OUTPUT
           echo "key=${OPENAI_KEY}" >> $GITHUB_OUTPUT
 
@@ -505,9 +508,10 @@ jobs:
           fi
           
           echo "✓ Endpoint: ${SEARCH_ENDPOINT}"
-          echo "::add-mask::${SEARCH_KEY}"
-          echo "✓ Key retrieved (masked)"
+          echo "✓ Key retrieved"
           
+          # NOTE: Do NOT ::add-mask:: this value here - see note in the OpenAI
+          # key step above; masking here breaks cross-job output propagation.
           echo "endpoint=${SEARCH_ENDPOINT}" >> $GITHUB_OUTPUT
           echo "key=${SEARCH_KEY}" >> $GITHUB_OUTPUT
 
@@ -776,16 +780,21 @@ jobs:
 
       - name: Deploy Retriever Container App
         id: deploy
+        env:
+          OPENAI_ENDPOINT: ${{ needs.provision-infrastructure.outputs.openai_endpoint }}
+          OPENAI_KEY: ${{ needs.provision-infrastructure.outputs.openai_key }}
+          SEARCH_ENDPOINT: ${{ needs.provision-infrastructure.outputs.search_endpoint }}
+          SEARCH_KEY: ${{ needs.provision-infrastructure.outputs.search_key }}
         run: |
           echo "🚀 Deploying Retriever Agent..."
           
+          # Mask these now that they're local to this job (safe: this job does
+          # not re-export them as its own job output).
+          echo "::add-mask::${OPENAI_KEY}"
+          echo "::add-mask::${SEARCH_KEY}"
+          
           # Validate all secrets are available
           echo "Validating secrets from provision-infrastructure job..."
-          
-          OPENAI_ENDPOINT="${{ needs.provision-infrastructure.outputs.openai_endpoint }}"
-          OPENAI_KEY="${{ needs.provision-infrastructure.outputs.openai_key }}"
-          SEARCH_ENDPOINT="${{ needs.provision-infrastructure.outputs.search_endpoint }}"
-          SEARCH_KEY="${{ needs.provision-infrastructure.outputs.search_key }}"
           
           if [ -z "$OPENAI_ENDPOINT" ]; then
             echo "❌ ERROR: openai_endpoint output is empty from provision-infrastructure job"
@@ -886,17 +895,22 @@ jobs:
 
       - name: Deploy Orchestrator Container App
         id: deploy
+        env:
+          OPENAI_ENDPOINT: ${{ needs.provision-infrastructure.outputs.openai_endpoint }}
+          OPENAI_KEY: ${{ needs.provision-infrastructure.outputs.openai_key }}
+          SQL_SERVER: ${{ needs.provision-infrastructure.outputs.sql_server }}
+          SQL_PASSWORD: ${{ secrets.AZURE_SQL_PASSWORD }}
+          RETRIEVER_URL: ${{ needs.deploy-retriever.outputs.retriever_url }}
         run: |
           echo "🚀 Deploying Orchestrator Agent..."
           
+          # Mask these now that they're local to this job (safe: this job does
+          # not re-export them as its own job output).
+          echo "::add-mask::${OPENAI_KEY}"
+          echo "::add-mask::${SQL_PASSWORD}"
+          
           # Validate all secrets are available
           echo "Validating secrets from provision-infrastructure job..."
-          
-          OPENAI_ENDPOINT="${{ needs.provision-infrastructure.outputs.openai_endpoint }}"
-          OPENAI_KEY="${{ needs.provision-infrastructure.outputs.openai_key }}"
-          SQL_SERVER="${{ needs.provision-infrastructure.outputs.sql_server }}"
-          SQL_PASSWORD="${{ secrets.AZURE_SQL_PASSWORD }}"
-          RETRIEVER_URL="${{ needs.deploy-retriever.outputs.retriever_url }}"
           
           if [ -z "$OPENAI_ENDPOINT" ]; then
             echo "❌ ERROR: openai_endpoint output is empty from provision-infrastructure job"
