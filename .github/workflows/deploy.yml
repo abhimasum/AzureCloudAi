@@ -30,7 +30,7 @@ env:
   SQL_DATABASE_NAME: geography_index
   OPENAI_NAME: ai-agents-openai
   SEARCH_NAME: ai-agents-search-abhimasum
-  STORAGE_NAME: aiagentsstorage
+  STORAGE_NAME: aiagentsstorageabhimasum
   RETRIEVER_PORT: 8081
   ORCHESTRATOR_PORT: 8002
 
@@ -435,17 +435,25 @@ jobs:
             
             MAX_ATTEMPTS=2
             ATTEMPT=1
+            CREATED=false
             while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
               echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
               
-              az storage account create \
+              if az storage account create \
                 --name ${{ env.STORAGE_NAME }} \
                 --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
                 --location ${{ env.AZURE_LOCATION }} \
-                --sku Standard_LRS 2>&1
-              
-              if [ $? -eq 0 ]; then
+                --sku Standard_LRS 2>&1; then
                 echo "✓ Storage Account created"
+                CREATED=true
+                break
+              fi
+              
+              # Creation may fail as "already taken" if it actually belongs to us
+              # (previous run created it, or it's still finishing provisioning).
+              if az storage account show --name ${{ env.STORAGE_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+                echo "✓ Storage Account ${{ env.STORAGE_NAME }} already exists in our resource group, reusing it"
+                CREATED=true
                 break
               fi
               
@@ -457,8 +465,8 @@ jobs:
               ATTEMPT=$((ATTEMPT + 1))
             done
             
-            if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
-              echo "❌ Failed to create Storage Account"
+            if [ "$CREATED" != "true" ]; then
+              echo "❌ Failed to create Storage Account - the name '${{ env.STORAGE_NAME }}' may be taken by another subscription/tenant (storage account names are globally unique)."
               exit 1
             fi
           fi
