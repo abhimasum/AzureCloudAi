@@ -90,6 +90,7 @@ jobs:
             "Microsoft.Storage"
             "Microsoft.App"
             "Microsoft.ContainerRegistry"
+            "Microsoft.OperationalInsights"
           )
           
           for provider in "${PROVIDERS[@]}"; do
