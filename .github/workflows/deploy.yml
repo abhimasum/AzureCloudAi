@@ -640,7 +640,7 @@ jobs:
           
           echo "🐳 Building orchestrator..."
           ORCH_IMAGE="${ACR_SERVER}/orchestrator:${{ github.sha }}"
-          docker build -t $ORCH_IMAGE agents/orchestrator_agent
+          docker build -t $ORCH_IMAGE -f agents/orchestrator_agent/Dockerfile agents/
           docker push $ORCH_IMAGE
           docker tag $ORCH_IMAGE ${ACR_SERVER}/orchestrator:latest
           docker push ${ACR_SERVER}/orchestrator:latest
