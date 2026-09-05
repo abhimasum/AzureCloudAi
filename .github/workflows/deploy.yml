@@ -365,7 +365,21 @@ jobs:
           echo "Fetching Azure OpenAI endpoint and key for downstream jobs..."
           OPENAI_ENDPOINT=$(az cognitiveservices account show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.endpoint -o tsv)
           OPENAI_KEY=$(az cognitiveservices account keys list --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query key1 -o tsv)
+          
+          # Validate outputs are not empty
+          if [ -z "$OPENAI_ENDPOINT" ]; then
+            echo "❌ ERROR: OPENAI_ENDPOINT is empty!"
+            exit 1
+          fi
+          if [ -z "$OPENAI_KEY" ]; then
+            echo "❌ ERROR: OPENAI_KEY is empty!"
+            exit 1
+          fi
+          
+          echo "✓ Endpoint retrieved: ${OPENAI_ENDPOINT:0:30}..."
           echo "::add-mask::${OPENAI_KEY}"
+          echo "✓ Key retrieved (masked)"
+          
           echo "endpoint=${OPENAI_ENDPOINT}" >> $GITHUB_OUTPUT
           echo "key=${OPENAI_KEY}" >> $GITHUB_OUTPUT
 
@@ -421,7 +435,21 @@ jobs:
           echo "Fetching AI Search endpoint and admin key for downstream jobs..."
           SEARCH_ENDPOINT="https://${{ env.SEARCH_NAME }}.search.windows.net"
           SEARCH_KEY=$(az search admin-key show --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --service-name ${{ env.SEARCH_NAME }} --query primaryKey -o tsv)
+          
+          # Validate outputs are not empty
+          if [ -z "$SEARCH_ENDPOINT" ]; then
+            echo "❌ ERROR: SEARCH_ENDPOINT is empty!"
+            exit 1
+          fi
+          if [ -z "$SEARCH_KEY" ]; then
+            echo "❌ ERROR: SEARCH_KEY is empty!"
+            exit 1
+          fi
+          
+          echo "✓ Endpoint: ${SEARCH_ENDPOINT}"
           echo "::add-mask::${SEARCH_KEY}"
+          echo "✓ Key retrieved (masked)"
+          
           echo "endpoint=${SEARCH_ENDPOINT}" >> $GITHUB_OUTPUT
           echo "key=${SEARCH_KEY}" >> $GITHUB_OUTPUT
 
@@ -693,16 +721,43 @@ jobs:
         run: |
           echo "🚀 Deploying Retriever Agent..."
           
+          # Validate all secrets are available
+          echo "Validating secrets from provision-infrastructure job..."
+          
+          OPENAI_ENDPOINT="${{ needs.provision-infrastructure.outputs.openai_endpoint }}"
+          OPENAI_KEY="${{ needs.provision-infrastructure.outputs.openai_key }}"
+          SEARCH_ENDPOINT="${{ needs.provision-infrastructure.outputs.search_endpoint }}"
+          SEARCH_KEY="${{ needs.provision-infrastructure.outputs.search_key }}"
+          
+          if [ -z "$OPENAI_ENDPOINT" ]; then
+            echo "❌ ERROR: openai_endpoint output is empty from provision-infrastructure job"
+            exit 1
+          fi
+          if [ -z "$OPENAI_KEY" ]; then
+            echo "❌ ERROR: openai_key output is empty from provision-infrastructure job"
+            exit 1
+          fi
+          if [ -z "$SEARCH_ENDPOINT" ]; then
+            echo "❌ ERROR: search_endpoint output is empty from provision-infrastructure job"
+            exit 1
+          fi
+          if [ -z "$SEARCH_KEY" ]; then
+            echo "❌ ERROR: search_key output is empty from provision-infrastructure job"
+            exit 1
+          fi
+          
+          echo "✓ All secrets validated and available"
+          
           if az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
             echo "Updating existing Container App..."
             az containerapp secret set \
               --name retriever \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --secrets \
-                openai-endpoint=${{ needs.provision-infrastructure.outputs.openai_endpoint }} \
-                openai-key=${{ needs.provision-infrastructure.outputs.openai_key }} \
-                search-endpoint=${{ needs.provision-infrastructure.outputs.search_endpoint }} \
-                search-key=${{ needs.provision-infrastructure.outputs.search_key }}
+                openai-endpoint="$OPENAI_ENDPOINT" \
+                openai-key="$OPENAI_KEY" \
+                search-endpoint="$SEARCH_ENDPOINT" \
+                search-key="$SEARCH_KEY"
 
             az containerapp update \
               --name retriever \
@@ -730,7 +785,7 @@ jobs:
               --memory 0.5Gi \
               --registry-server ${{ needs.provision-infrastructure.outputs.acr_login_server }} \
               --registry-username ${{ steps.acr.outputs.username }} \
-              --registry-password ${{ steps.acr.outputs.password }} \
+              --registry-password "${{ steps.acr.outputs.password }}" \
               --env-vars \
                 AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
                 AZURE_OPENAI_API_KEY=secretref:openai-key \
@@ -739,10 +794,10 @@ jobs:
                 AZURE_SEARCH_KEY=secretref:search-key \
                 AZURE_SEARCH_INDEX=documents \
               --secrets \
-                openai-endpoint=${{ needs.provision-infrastructure.outputs.openai_endpoint }} \
-                openai-key=${{ needs.provision-infrastructure.outputs.openai_key }} \
-                search-endpoint=${{ needs.provision-infrastructure.outputs.search_endpoint }} \
-                search-key=${{ needs.provision-infrastructure.outputs.search_key }}
+                openai-endpoint="$OPENAI_ENDPOINT" \
+                openai-key="$OPENAI_KEY" \
+                search-endpoint="$SEARCH_ENDPOINT" \
+                search-key="$SEARCH_KEY"
           fi
           
           URL=$(az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
@@ -776,16 +831,48 @@ jobs:
         run: |
           echo "🚀 Deploying Orchestrator Agent..."
           
+          # Validate all secrets are available
+          echo "Validating secrets from provision-infrastructure job..."
+          
+          OPENAI_ENDPOINT="${{ needs.provision-infrastructure.outputs.openai_endpoint }}"
+          OPENAI_KEY="${{ needs.provision-infrastructure.outputs.openai_key }}"
+          SQL_SERVER="${{ needs.provision-infrastructure.outputs.sql_server }}"
+          SQL_PASSWORD="${{ secrets.AZURE_SQL_PASSWORD }}"
+          RETRIEVER_URL="${{ needs.deploy-retriever.outputs.retriever_url }}"
+          
+          if [ -z "$OPENAI_ENDPOINT" ]; then
+            echo "❌ ERROR: openai_endpoint output is empty from provision-infrastructure job"
+            exit 1
+          fi
+          if [ -z "$OPENAI_KEY" ]; then
+            echo "❌ ERROR: openai_key output is empty from provision-infrastructure job"
+            exit 1
+          fi
+          if [ -z "$SQL_SERVER" ]; then
+            echo "❌ ERROR: sql_server output is empty from provision-infrastructure job"
+            exit 1
+          fi
+          if [ -z "$SQL_PASSWORD" ]; then
+            echo "❌ ERROR: AZURE_SQL_PASSWORD secret is not set"
+            exit 1
+          fi
+          if [ -z "$RETRIEVER_URL" ]; then
+            echo "❌ ERROR: retriever_url output is empty from deploy-retriever job"
+            exit 1
+          fi
+          
+          echo "✓ All secrets validated and available"
+          
           if az containerapp show --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
             echo "Updating existing Container App..."
             az containerapp secret set \
               --name orchestrator \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --secrets \
-                openai-endpoint=${{ needs.provision-infrastructure.outputs.openai_endpoint }} \
-                openai-key=${{ needs.provision-infrastructure.outputs.openai_key }} \
-                sql-server=${{ needs.provision-infrastructure.outputs.sql_server }}.database.windows.net \
-                sql-password=${{ secrets.AZURE_SQL_PASSWORD }}
+                openai-endpoint="$OPENAI_ENDPOINT" \
+                openai-key="$OPENAI_KEY" \
+                sql-server="${SQL_SERVER}.database.windows.net" \
+                sql-password="$SQL_PASSWORD"
 
             az containerapp update \
               --name orchestrator \
@@ -799,7 +886,7 @@ jobs:
                 AZURE_SQL_DATABASE=${{ env.SQL_DATABASE_NAME }} \
                 AZURE_SQL_USERNAME=sqladmin \
                 AZURE_SQL_PASSWORD=secretref:sql-password \
-                RETRIEVER_URL=${{ needs.deploy-retriever.outputs.retriever_url }}
+                RETRIEVER_URL="$RETRIEVER_URL"
           else
             echo "Creating new Container App..."
             az containerapp create \
@@ -815,7 +902,7 @@ jobs:
               --memory 1.0Gi \
               --registry-server ${{ needs.provision-infrastructure.outputs.acr_login_server }} \
               --registry-username ${{ steps.acr.outputs.username }} \
-              --registry-password ${{ steps.acr.outputs.password }} \
+              --registry-password "${{ steps.acr.outputs.password }}" \
               --env-vars \
                 AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
                 AZURE_OPENAI_API_KEY=secretref:openai-key \
@@ -824,12 +911,12 @@ jobs:
                 AZURE_SQL_DATABASE=${{ env.SQL_DATABASE_NAME }} \
                 AZURE_SQL_USERNAME=sqladmin \
                 AZURE_SQL_PASSWORD=secretref:sql-password \
-                RETRIEVER_URL=${{ needs.deploy-retriever.outputs.retriever_url }} \
+                RETRIEVER_URL="$RETRIEVER_URL" \
               --secrets \
-                openai-endpoint=${{ needs.provision-infrastructure.outputs.openai_endpoint }} \
-                openai-key=${{ needs.provision-infrastructure.outputs.openai_key }} \
-                sql-server=${{ needs.provision-infrastructure.outputs.sql_server }}.database.windows.net \
-                sql-password=${{ secrets.AZURE_SQL_PASSWORD }}
+                openai-endpoint="$OPENAI_ENDPOINT" \
+                openai-key="$OPENAI_KEY" \
+                sql-server="${SQL_SERVER}.database.windows.net" \
+                sql-password="$SQL_PASSWORD"
           fi
           
           URL=$(az containerapp show --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
