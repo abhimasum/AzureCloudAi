@@ -359,7 +359,7 @@ jobs:
           echo "🔍 Checking Azure AI Search: ${{ env.SEARCH_NAME }}"
           
           if az search service show --name ${{ env.SEARCH_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
-            echo "✓ AI Search ${{ env.SEARCH_NAME }} exists"
+            echo "✓ AI Search ${{ env.SEARCH_NAME }} exists, reusing it"
             exit 0
           fi
           
@@ -381,6 +381,14 @@ jobs:
               exit 0
             fi
             
+            # Creation may fail as "name already in use" if it actually belongs to
+            # us (previous run created it, or it's still finishing provisioning).
+            # Re-check ownership before treating this as a real failure.
+            if az search service show --name ${{ env.SEARCH_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+              echo "✓ AI Search ${{ env.SEARCH_NAME }} already exists in our resource group, reusing it"
+              exit 0
+            fi
+            
             if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
               echo "⚠️ Creation failed, retrying in 15 seconds..."
               sleep 15
@@ -389,7 +397,7 @@ jobs:
             ATTEMPT=$((ATTEMPT + 1))
           done
           
-          echo "❌ Failed to create AI Search"
+          echo "❌ Failed to create AI Search - the name '${{ env.SEARCH_NAME }}' may be taken by another subscription/tenant (search service names are globally unique)."
           exit 1
 
       - name: Check and Create Storage Account
