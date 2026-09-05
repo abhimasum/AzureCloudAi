@@ -363,28 +363,71 @@ jobs:
           echo "✓ Azure OpenAI ready with GPT-4o deployment"
           
           echo "Fetching Azure OpenAI endpoint and key for downstream jobs..."
-          OPENAI_ENDPOINT=$(az cognitiveservices account show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.endpoint -o tsv 2>&1)
           
-          if [ -z "$OPENAI_ENDPOINT" ]; then
-            echo "❌ Failed to fetch OpenAI endpoint. Response:"
-            echo "$OPENAI_ENDPOINT"
+          # Ensure subscription is set for all commands
+          az account set --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" || {
+            echo "❌ Failed to set subscription context"
+            exit 1
+          }
+          
+          # Fetch endpoint with better error handling
+          set +e  # Disable exit on error to capture error output
+          OPENAI_ENDPOINT=$(az cognitiveservices account show \
+            --name "${{ env.OPENAI_NAME }}" \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
+            --query properties.endpoint \
+            -o tsv 2>&1)
+          ENDPOINT_EXIT_CODE=$?
+          set -e  # Re-enable exit on error
+          
+          if [ $ENDPOINT_EXIT_CODE -ne 0 ] || [ -z "$OPENAI_ENDPOINT" ]; then
+            echo "❌ Failed to fetch OpenAI endpoint"
+            echo "Exit code: $ENDPOINT_EXIT_CODE"
+            echo "Response: $OPENAI_ENDPOINT"
+            echo ""
+            echo "Debugging: Show account details"
+            az cognitiveservices account show \
+              --name "${{ env.OPENAI_NAME }}" \
+              --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" 2>&1
             exit 1
           fi
           
-          # Try the correct command to get keys
-          OPENAI_KEY=$(az cognitiveservices account keys show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query key1 -o tsv 2>&1)
+          # Fetch key with better error handling
+          set +e
+          OPENAI_KEY=$(az cognitiveservices account keys show \
+            --name "${{ env.OPENAI_NAME }}" \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
+            --query key1 \
+            -o tsv 2>&1)
+          KEY_EXIT_CODE=$?
+          set -e
           
-          if [ -z "$OPENAI_KEY" ] || [[ "$OPENAI_KEY" == *"ERROR"* ]] || [[ "$OPENAI_KEY" == *"error"* ]]; then
-            echo "⚠️ First attempt failed with 'keys show', trying 'keys list'..."
-            OPENAI_KEY=$(az cognitiveservices account keys list --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query key1 -o tsv 2>&1)
+          # Fallback to keys list if keys show fails
+          if [ $KEY_EXIT_CODE -ne 0 ] || [ -z "$OPENAI_KEY" ]; then
+            echo "⚠️ 'keys show' failed (exit: $KEY_EXIT_CODE), attempting 'keys list'..."
+            
+            set +e
+            OPENAI_KEY=$(az cognitiveservices account keys list \
+              --name "${{ env.OPENAI_NAME }}" \
+              --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+              --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
+              --query key1 \
+              -o tsv 2>&1)
+            KEY_EXIT_CODE=$?
+            set -e
           fi
           
-          if [ -z "$OPENAI_KEY" ] || [[ "$OPENAI_KEY" == *"ERROR"* ]] || [[ "$OPENAI_KEY" == *"error"* ]]; then
-            echo "❌ Failed to fetch OpenAI key. Response:"
-            echo "$OPENAI_KEY"
+          if [ $KEY_EXIT_CODE -ne 0 ] || [ -z "$OPENAI_KEY" ]; then
+            echo "❌ Failed to fetch OpenAI key with both commands"
+            echo "Exit code: $KEY_EXIT_CODE"
+            echo "Response: $OPENAI_KEY"
             echo ""
-            echo "Debugging: List all keys for ${{ env.OPENAI_NAME }}"
-            az cognitiveservices account keys show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>&1
+            echo "Debugging: Checking account and permissions"
+            az cognitiveservices account keys list \
+              --name "${{ env.OPENAI_NAME }}" \
+              --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" 2>&1 || true
             exit 1
           fi
           
@@ -446,7 +489,29 @@ jobs:
           
           echo "Fetching AI Search endpoint and admin key for downstream jobs..."
           SEARCH_ENDPOINT="https://${{ env.SEARCH_NAME }}.search.windows.net"
-          SEARCH_KEY=$(az search admin-key show --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --service-name ${{ env.SEARCH_NAME }} --query primaryKey -o tsv)
+          
+          # Fetch search admin key with proper error handling
+          set +e
+          SEARCH_KEY=$(az search admin-key show \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --service-name "${{ env.SEARCH_NAME }}" \
+            --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
+            --query primaryKey \
+            -o tsv 2>&1)
+          SEARCH_KEY_EXIT_CODE=$?
+          set -e
+          
+          if [ $SEARCH_KEY_EXIT_CODE -ne 0 ] || [ -z "$SEARCH_KEY" ]; then
+            echo "❌ Failed to fetch AI Search admin key"
+            echo "Exit code: $SEARCH_KEY_EXIT_CODE"
+            echo "Response: $SEARCH_KEY"
+            echo ""
+            echo "Debugging: Check AI Search service status"
+            az search service show \
+              --name "${{ env.SEARCH_NAME }}" \
+              --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" 2>&1
+            exit 1
+          fi
           
           # Validate outputs are not empty
           if [ -z "$SEARCH_ENDPOINT" ]; then
