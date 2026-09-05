@@ -46,19 +46,19 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "✓ GCP authentication verified" -ForegroundColor Green
 Write-Host ""
 
-# Check if BigQuery dataset exists
-Write-Host "Verifying BigQuery dataset..." -ForegroundColor Yellow
-$bqCheck = bq ls geography_index 2>&1
+# Check if SQL database exists
+Write-Host "Verifying Azure SQL database..." -ForegroundColor Yellow
+$sqlCheck = sqlcmd -S $env:AZURE_SQL_SERVER -d geography_db -U sa -P $env:AZURE_SQL_PASSWORD -Q "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES" 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "WARNING: BigQuery dataset 'geography_index' not found!" -ForegroundColor Yellow
-    Write-Host "Creating BigQuery dataset and tables..." -ForegroundColor Cyan
-    python infra/setup_bigquery.py
+    Write-Host "WARNING: Azure SQL database 'geography_db' not found or not accessible!" -ForegroundColor Yellow
+    Write-Host "Creating Azure SQL database and tables..." -ForegroundColor Cyan
+    python infra/setup_azure_sql.py
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: Failed to setup BigQuery!" -ForegroundColor Red
+        Write-Host "ERROR: Failed to setup Azure SQL database!" -ForegroundColor Red
         exit 1
     }
 }
-Write-Host "✓ BigQuery dataset verified" -ForegroundColor Green
+Write-Host "✓ Azure SQL database verified" -ForegroundColor Green
 Write-Host ""
 
 # Show menu
