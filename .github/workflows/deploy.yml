@@ -40,6 +40,10 @@ jobs:
     outputs:
       acr_login_server: ${{ steps.infra.outputs.acr_login_server }}
       sql_server: ${{ steps.sql.outputs.sql_server }}
+      openai_endpoint: ${{ steps.openai.outputs.endpoint }}
+      openai_key: ${{ steps.openai.outputs.key }}
+      search_endpoint: ${{ steps.search.outputs.endpoint }}
+      search_key: ${{ steps.search.outputs.key }}
     steps:
       - uses: actions/checkout@v4
 
@@ -287,118 +291,138 @@ jobs:
           echo "✓ Purge sequence completed"
 
       - name: Check and Create Azure OpenAI
+        id: openai
         run: |
           echo "🤖 Checking Azure OpenAI: ${{ env.OPENAI_NAME }}"
           
           if az cognitiveservices account show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
             echo "✓ Azure OpenAI ${{ env.OPENAI_NAME }} exists"
-            exit 0
+          else
+            echo "Creating Azure OpenAI ${{ env.OPENAI_NAME }}..."
+            
+            MAX_ATTEMPTS=3
+            ATTEMPT=1
+            while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+              echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+              
+              # First attempt: try creating normally
+              if [ $ATTEMPT -eq 1 ]; then
+                az cognitiveservices account create \
+                  --name ${{ env.OPENAI_NAME }} \
+                  --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                  --location ${{ env.AZURE_LOCATION }} \
+                  --kind OpenAI \
+                  --sku S0 2>&1 && break
+              fi
+              
+              # Subsequent attempts: try with restore flag (for soft-deleted resources)
+              if [ $ATTEMPT -gt 1 ]; then
+                echo "Attempting with restore flag (soft-deleted resource recovery)..."
+                az cognitiveservices account create \
+                  --name ${{ env.OPENAI_NAME }} \
+                  --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                  --location ${{ env.AZURE_LOCATION }} \
+                  --kind OpenAI \
+                  --sku S0 \
+                  --restore 2>&1 && break
+              fi
+              
+              if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+                echo "⚠️ Attempt $ATTEMPT failed, waiting 30 seconds before retry..."
+                sleep 30
+              fi
+              
+              ATTEMPT=$((ATTEMPT + 1))
+            done
+            
+            if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+              echo "❌ Failed to create/restore Azure OpenAI after $MAX_ATTEMPTS attempts"
+              exit 1
+            fi
+            
+            echo "✓ Azure OpenAI created/restored successfully"
+            sleep 10
           fi
           
-          echo "Creating Azure OpenAI ${{ env.OPENAI_NAME }}..."
-          
-          MAX_ATTEMPTS=3
-          ATTEMPT=1
-          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-            echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
-            
-            # First attempt: try creating normally
-            if [ $ATTEMPT -eq 1 ]; then
-              az cognitiveservices account create \
-                --name ${{ env.OPENAI_NAME }} \
-                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-                --location ${{ env.AZURE_LOCATION }} \
-                --kind OpenAI \
-                --sku S0 2>&1 && break
-            fi
-            
-            # Subsequent attempts: try with restore flag (for soft-deleted resources)
-            if [ $ATTEMPT -gt 1 ]; then
-              echo "Attempting with restore flag (soft-deleted resource recovery)..."
-              az cognitiveservices account create \
-                --name ${{ env.OPENAI_NAME }} \
-                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-                --location ${{ env.AZURE_LOCATION }} \
-                --kind OpenAI \
-                --sku S0 \
-                --restore 2>&1 && break
-            fi
-            
-            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
-              echo "⚠️ Attempt $ATTEMPT failed, waiting 30 seconds before retry..."
-              sleep 30
-            fi
-            
-            ATTEMPT=$((ATTEMPT + 1))
-          done
-          
-          if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
-            echo "❌ Failed to create/restore Azure OpenAI after $MAX_ATTEMPTS attempts"
-            exit 1
-          fi
-          
-          echo "✓ Azure OpenAI created/restored successfully"
-          
-          echo "Deploying GPT-4o model..."
-          sleep 10
-          
-          az cognitiveservices account deployment create \
+          echo "Ensuring gpt-4o model deployment exists..."
+          if ! az cognitiveservices account deployment show \
             --name ${{ env.OPENAI_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --deployment-name gpt-4o \
-            --model-name gpt-4o \
-            --model-version "2024-11-20" \
-            --model-format OpenAI \
-            --sku-capacity 3 \
-            --sku-name GlobalStandard
-          
+            --deployment-name gpt-4o -o none 2>/dev/null; then
+            az cognitiveservices account deployment create \
+              --name ${{ env.OPENAI_NAME }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --deployment-name gpt-4o \
+              --model-name gpt-4o \
+              --model-version "2024-11-20" \
+              --model-format OpenAI \
+              --sku-capacity 3 \
+              --sku-name GlobalStandard
+          fi
           echo "✓ Azure OpenAI ready with GPT-4o deployment"
+          
+          echo "Fetching Azure OpenAI endpoint and key for downstream jobs..."
+          OPENAI_ENDPOINT=$(az cognitiveservices account show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.endpoint -o tsv)
+          OPENAI_KEY=$(az cognitiveservices account keys list --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query key1 -o tsv)
+          echo "::add-mask::${OPENAI_KEY}"
+          echo "endpoint=${OPENAI_ENDPOINT}" >> $GITHUB_OUTPUT
+          echo "key=${OPENAI_KEY}" >> $GITHUB_OUTPUT
 
       - name: Check and Create AI Search
+        id: search
         run: |
           echo "🔍 Checking Azure AI Search: ${{ env.SEARCH_NAME }}"
           
           if az search service show --name ${{ env.SEARCH_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
             echo "✓ AI Search ${{ env.SEARCH_NAME }} exists, reusing it"
-            exit 0
+          else
+            echo "Creating AI Search ${{ env.SEARCH_NAME }}..."
+            
+            MAX_ATTEMPTS=2
+            ATTEMPT=1
+            CREATED=false
+            while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+              echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+              
+              if az search service create \
+                --name ${{ env.SEARCH_NAME }} \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location ${{ env.AZURE_LOCATION }} \
+                --sku Basic 2>&1; then
+                echo "✓ AI Search created"
+                CREATED=true
+                break
+              fi
+              
+              # Creation may fail as "name already in use" if it actually belongs to
+              # us (previous run created it, or it's still finishing provisioning).
+              # Re-check ownership before treating this as a real failure.
+              if az search service show --name ${{ env.SEARCH_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+                echo "✓ AI Search ${{ env.SEARCH_NAME }} already exists in our resource group, reusing it"
+                CREATED=true
+                break
+              fi
+              
+              if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+                echo "⚠️ Creation failed, retrying in 15 seconds..."
+                sleep 15
+              fi
+              
+              ATTEMPT=$((ATTEMPT + 1))
+            done
+            
+            if [ "$CREATED" != "true" ]; then
+              echo "❌ Failed to create AI Search - the name '${{ env.SEARCH_NAME }}' may be taken by another subscription/tenant (search service names are globally unique)."
+              exit 1
+            fi
           fi
           
-          echo "Creating AI Search ${{ env.SEARCH_NAME }}..."
-          
-          MAX_ATTEMPTS=2
-          ATTEMPT=1
-          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-            echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
-            
-            az search service create \
-              --name ${{ env.SEARCH_NAME }} \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --location ${{ env.AZURE_LOCATION }} \
-              --sku Basic 2>&1
-            
-            if [ $? -eq 0 ]; then
-              echo "✓ AI Search created"
-              exit 0
-            fi
-            
-            # Creation may fail as "name already in use" if it actually belongs to
-            # us (previous run created it, or it's still finishing provisioning).
-            # Re-check ownership before treating this as a real failure.
-            if az search service show --name ${{ env.SEARCH_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
-              echo "✓ AI Search ${{ env.SEARCH_NAME }} already exists in our resource group, reusing it"
-              exit 0
-            fi
-            
-            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
-              echo "⚠️ Creation failed, retrying in 15 seconds..."
-              sleep 15
-            fi
-            
-            ATTEMPT=$((ATTEMPT + 1))
-          done
-          
-          echo "❌ Failed to create AI Search - the name '${{ env.SEARCH_NAME }}' may be taken by another subscription/tenant (search service names are globally unique)."
-          exit 1
+          echo "Fetching AI Search endpoint and admin key for downstream jobs..."
+          SEARCH_ENDPOINT="https://${{ env.SEARCH_NAME }}.search.windows.net"
+          SEARCH_KEY=$(az search admin-key show --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --service-name ${{ env.SEARCH_NAME }} --query primaryKey -o tsv)
+          echo "::add-mask::${SEARCH_KEY}"
+          echo "endpoint=${SEARCH_ENDPOINT}" >> $GITHUB_OUTPUT
+          echo "key=${SEARCH_KEY}" >> $GITHUB_OUTPUT
 
       - name: Check and Create Storage Account
         run: |
@@ -655,10 +679,26 @@ jobs:
           
           if az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
             echo "Updating existing Container App..."
+            az containerapp secret set \
+              --name retriever \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --secrets \
+                openai-endpoint=${{ needs.provision-infrastructure.outputs.openai_endpoint }} \
+                openai-key=${{ needs.provision-infrastructure.outputs.openai_key }} \
+                search-endpoint=${{ needs.provision-infrastructure.outputs.search_endpoint }} \
+                search-key=${{ needs.provision-infrastructure.outputs.search_key }}
+
             az containerapp update \
               --name retriever \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --image ${{ needs.build-and-push-images.outputs.retriever_image }}
+              --image ${{ needs.build-and-push-images.outputs.retriever_image }} \
+              --set-env-vars \
+                AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
+                AZURE_OPENAI_API_KEY=secretref:openai-key \
+                AZURE_OPENAI_DEPLOYMENT=gpt-4o \
+                AZURE_SEARCH_ENDPOINT=secretref:search-endpoint \
+                AZURE_SEARCH_KEY=secretref:search-key \
+                AZURE_SEARCH_INDEX=documents
           else
             echo "Creating new Container App..."
             az containerapp create \
@@ -683,10 +723,10 @@ jobs:
                 AZURE_SEARCH_KEY=secretref:search-key \
                 AZURE_SEARCH_INDEX=documents \
               --secrets \
-                openai-endpoint=${{ secrets.AZURE_OPENAI_ENDPOINT }} \
-                openai-key=${{ secrets.AZURE_OPENAI_API_KEY }} \
-                search-endpoint=${{ secrets.AZURE_SEARCH_ENDPOINT }} \
-                search-key=${{ secrets.AZURE_SEARCH_KEY }}
+                openai-endpoint=${{ needs.provision-infrastructure.outputs.openai_endpoint }} \
+                openai-key=${{ needs.provision-infrastructure.outputs.openai_key }} \
+                search-endpoint=${{ needs.provision-infrastructure.outputs.search_endpoint }} \
+                search-key=${{ needs.provision-infrastructure.outputs.search_key }}
           fi
           
           URL=$(az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
@@ -722,10 +762,28 @@ jobs:
           
           if az containerapp show --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
             echo "Updating existing Container App..."
+            az containerapp secret set \
+              --name orchestrator \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --secrets \
+                openai-endpoint=${{ needs.provision-infrastructure.outputs.openai_endpoint }} \
+                openai-key=${{ needs.provision-infrastructure.outputs.openai_key }} \
+                sql-server=${{ needs.provision-infrastructure.outputs.sql_server }}.database.windows.net \
+                sql-password=${{ secrets.AZURE_SQL_PASSWORD }}
+
             az containerapp update \
               --name orchestrator \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --image ${{ needs.build-and-push-images.outputs.orchestrator_image }}
+              --image ${{ needs.build-and-push-images.outputs.orchestrator_image }} \
+              --set-env-vars \
+                AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
+                AZURE_OPENAI_API_KEY=secretref:openai-key \
+                AZURE_OPENAI_DEPLOYMENT=gpt-4o \
+                AZURE_SQL_SERVER=secretref:sql-server \
+                AZURE_SQL_DATABASE=${{ env.SQL_DATABASE_NAME }} \
+                AZURE_SQL_USERNAME=sqladmin \
+                AZURE_SQL_PASSWORD=secretref:sql-password \
+                RETRIEVER_URL=${{ needs.deploy-retriever.outputs.retriever_url }}
           else
             echo "Creating new Container App..."
             az containerapp create \
@@ -752,8 +810,8 @@ jobs:
                 AZURE_SQL_PASSWORD=secretref:sql-password \
                 RETRIEVER_URL=${{ needs.deploy-retriever.outputs.retriever_url }} \
               --secrets \
-                openai-endpoint=${{ secrets.AZURE_OPENAI_ENDPOINT }} \
-                openai-key=${{ secrets.AZURE_OPENAI_API_KEY }} \
+                openai-endpoint=${{ needs.provision-infrastructure.outputs.openai_endpoint }} \
+                openai-key=${{ needs.provision-infrastructure.outputs.openai_key }} \
                 sql-server=${{ needs.provision-infrastructure.outputs.sql_server }}.database.windows.net \
                 sql-password=${{ secrets.AZURE_SQL_PASSWORD }}
           fi
