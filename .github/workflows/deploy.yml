@@ -393,9 +393,10 @@ jobs:
             exit 1
           fi
           
-          # Fetch key with better error handling
+          # Fetch key - "az cognitiveservices account keys show" does not exist;
+          # only "list" and "regenerate" are valid subcommands.
           set +e
-          OPENAI_KEY=$(az cognitiveservices account keys show \
+          OPENAI_KEY=$(az cognitiveservices account keys list \
             --name "${{ env.OPENAI_NAME }}" \
             --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
             --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
@@ -404,30 +405,10 @@ jobs:
           KEY_EXIT_CODE=$?
           set -e
           
-          # Fallback to keys list if keys show fails
           if [ $KEY_EXIT_CODE -ne 0 ] || [ -z "$OPENAI_KEY" ]; then
-            echo "⚠️ 'keys show' failed (exit: $KEY_EXIT_CODE), attempting 'keys list'..."
-            
-            set +e
-            OPENAI_KEY=$(az cognitiveservices account keys list \
-              --name "${{ env.OPENAI_NAME }}" \
-              --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
-              --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
-              --query key1 \
-              -o tsv 2>&1)
-            KEY_EXIT_CODE=$?
-            set -e
-          fi
-          
-          if [ $KEY_EXIT_CODE -ne 0 ] || [ -z "$OPENAI_KEY" ]; then
-            echo "❌ Failed to fetch OpenAI key with both commands"
+            echo "❌ Failed to fetch OpenAI key"
             echo "Exit code: $KEY_EXIT_CODE"
             echo "Response: $OPENAI_KEY"
-            echo ""
-            echo "Debugging: Checking account and permissions"
-            az cognitiveservices account keys list \
-              --name "${{ env.OPENAI_NAME }}" \
-              --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" 2>&1 || true
             exit 1
           fi
           
