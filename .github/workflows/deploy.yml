@@ -29,7 +29,7 @@ env:
   SQL_SERVER_NAME: ai-agents-sql
   SQL_DATABASE_NAME: geography_index
   OPENAI_NAME: ai-agents-openai
-  SEARCH_NAME: ai-agents-search
+  SEARCH_NAME: ai-agents-search-abhimasum
   STORAGE_NAME: aiagentsstorage
   RETRIEVER_PORT: 8081
   ORCHESTRATOR_PORT: 8002
