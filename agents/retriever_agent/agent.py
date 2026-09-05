@@ -50,7 +50,7 @@ def search_knowledge_base(query: str, top_k: int = 10) -> str:
 
 
 root_agent = Agent(
-    model=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
+    model=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4"),
     name="retriever_agent",
     description=(
         "Specialist agent that answers questions using Azure AI Search. "
