@@ -32,7 +32,7 @@ retriever_agent = Agent(
 )
 
 root_agent = Agent(
-    model=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini"),
+    model=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
     name="orchestrator_agent",
     description="Front-door assistant that routes requests to specialist agents.",
     instruction="""
