@@ -91,7 +91,7 @@ def list_all_states() -> str:
 
 
 root_agent = Agent(
-    model=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini"),
+    model=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
     name="sql_agent",
     description=(
         "Database specialist that queries Azure SQL for geography index metadata. "
