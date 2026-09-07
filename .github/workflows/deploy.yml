@@ -1026,12 +1026,15 @@ jobs:
         run: |
           echo "📤 Uploading documents to Azure Blob Storage..."
           STORAGE_NAME=$(az storage account list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          # --auth-mode login needs an Azure AD "Storage Blob Data Contributor"
+          # RBAC role assignment (not granted) - use the account key instead.
+          STORAGE_KEY=$(az storage account keys list --account-name $STORAGE_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].value" -o tsv)
           
           az storage blob upload-batch \
             --account-name $STORAGE_NAME \
+            --account-key "$STORAGE_KEY" \
             --destination documents \
             --source data/sample_docs/ \
-            --auth-mode login \
             --overwrite
           
           echo "✓ Documents uploaded: india.md, states.md, districtandplace.md"
