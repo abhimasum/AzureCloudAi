@@ -8,21 +8,46 @@ Served on Cloud Run with the Dockerfile in this folder.
 
 import os
 import json
+import logging
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
+from starlette.applications import Starlette
+from starlette.routing import Route
 
 from google.adk.a2a.utils.agent_to_a2a import to_a2a
 
-from agent import root_agent
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Get deployment settings
 PORT = int(os.environ.get("PORT", 8081))
 HOST = os.environ.get("HOST", "localhost")
 PUBLIC_URL = os.environ.get("PUBLIC_URL")
 
-# Create the base A2A app
-base_app = to_a2a(root_agent, host=HOST, port=PORT)
+try:
+    logger.info("Importing retriever agent...")
+    from agent import root_agent
+    logger.info("Retriever agent imported successfully")
+except Exception as e:
+    logger.error(f"Failed to import retriever agent: {e}", exc_info=True)
+    # Create minimal app so container doesn't crash
+    async def health(request):
+        return JSONResponse({"status": "degraded", "error": str(e)})
+    
+    base_app = Starlette(routes=[Route("/health", health)])
+    root_agent = None
+
+if root_agent:
+    try:
+        logger.info(f"Creating A2A app on {HOST}:{PORT}")
+        base_app = to_a2a(root_agent, host=HOST, port=PORT)
+        logger.info("A2A app created successfully")
+    except Exception as e:
+        logger.error(f"Failed to create A2A app: {e}", exc_info=True)
+        async def health(request):
+            return JSONResponse({"status": "degraded", "error": str(e)})
+        base_app = Starlette(routes=[Route("/health", health)])
 
 
 class PublicURLMiddleware(BaseHTTPMiddleware):
@@ -60,3 +85,4 @@ if PUBLIC_URL:
 
 # Export the final app
 a2a_app = base_app
+logger.info(f"Retriever app ready on port {PORT}")
