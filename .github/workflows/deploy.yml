@@ -885,7 +885,8 @@ jobs:
           
           # Restart container to ensure it picks up environment changes
           echo "Restarting retriever container app..."
-          az containerapp restart --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }}
+          LATEST_REVISION=$(az containerapp revision list --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          az containerapp revision restart --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --revision "$LATEST_REVISION"
           
           URL=$(az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
           echo "url=https://${URL}" >> $GITHUB_OUTPUT
@@ -1015,7 +1016,8 @@ jobs:
           
           # Restart container to ensure it picks up environment changes
           echo "Restarting orchestrator container app..."
-          az containerapp restart --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }}
+          LATEST_REVISION=$(az containerapp revision list --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          az containerapp revision restart --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --revision "$LATEST_REVISION"
           
           URL=$(az containerapp show --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
           echo "url=https://${URL}" >> $GITHUB_OUTPUT
