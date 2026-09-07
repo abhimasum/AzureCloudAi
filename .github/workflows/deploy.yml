@@ -850,7 +850,8 @@ jobs:
                 AZURE_OPENAI_DEPLOYMENT=gpt-4o \
                 AZURE_SEARCH_ENDPOINT=secretref:search-endpoint \
                 AZURE_SEARCH_KEY=secretref:search-key \
-                AZURE_SEARCH_INDEX=documents
+                AZURE_SEARCH_INDEX=documents \
+                PORT=${{ env.RETRIEVER_PORT }}
           else
             echo "Creating new Container App..."
             az containerapp create \
@@ -874,6 +875,7 @@ jobs:
                 AZURE_SEARCH_ENDPOINT=secretref:search-endpoint \
                 AZURE_SEARCH_KEY=secretref:search-key \
                 AZURE_SEARCH_INDEX=documents \
+                PORT=${{ env.RETRIEVER_PORT }} \
               --secrets \
                 openai-endpoint="$OPENAI_ENDPOINT" \
                 openai-key="$OPENAI_KEY" \
@@ -972,7 +974,8 @@ jobs:
                 AZURE_SQL_DATABASE=${{ env.SQL_DATABASE_NAME }} \
                 AZURE_SQL_USERNAME=sqladmin \
                 AZURE_SQL_PASSWORD=secretref:sql-password \
-                RETRIEVER_URL="$RETRIEVER_URL"
+                RETRIEVER_URL="$RETRIEVER_URL" \
+                PORT=${{ env.ORCHESTRATOR_PORT }}
           else
             echo "Creating new Container App..."
             az containerapp create \
@@ -998,6 +1001,7 @@ jobs:
                 AZURE_SQL_USERNAME=sqladmin \
                 AZURE_SQL_PASSWORD=secretref:sql-password \
                 RETRIEVER_URL="$RETRIEVER_URL" \
+                PORT=${{ env.ORCHESTRATOR_PORT }} \
               --secrets \
                 openai-endpoint="$OPENAI_ENDPOINT" \
                 openai-key="$OPENAI_KEY" \
