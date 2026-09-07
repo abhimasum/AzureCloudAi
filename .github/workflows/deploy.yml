@@ -782,26 +782,24 @@ jobs:
         id: deploy
         env:
           OPENAI_ENDPOINT: ${{ needs.provision-infrastructure.outputs.openai_endpoint }}
-          OPENAI_KEY: ${{ needs.provision-infrastructure.outputs.openai_key }}
           SEARCH_ENDPOINT: ${{ needs.provision-infrastructure.outputs.search_endpoint }}
-          SEARCH_KEY: ${{ needs.provision-infrastructure.outputs.search_key }}
         run: |
           echo "🚀 Deploying Retriever Agent..."
           
-          # Mask these now that they're local to this job (safe: this job does
-          # not re-export them as its own job output).
-          echo "::add-mask::${OPENAI_KEY}"
-          echo "::add-mask::${SEARCH_KEY}"
+          # Job outputs for these keys are unreliable across jobs (learning
+          # project - simplest fix is to just re-fetch them here directly).
+          OPENAI_KEY=$(az cognitiveservices account keys list --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query key1 -o tsv)
+          SEARCH_KEY=$(az search admin-key show --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --service-name ${{ env.SEARCH_NAME }} --query primaryKey -o tsv)
           
           # Validate all secrets are available
-          echo "Validating secrets from provision-infrastructure job..."
+          echo "Validating secrets..."
           
           if [ -z "$OPENAI_ENDPOINT" ]; then
             echo "❌ ERROR: openai_endpoint output is empty from provision-infrastructure job"
             exit 1
           fi
           if [ -z "$OPENAI_KEY" ]; then
-            echo "❌ ERROR: openai_key output is empty from provision-infrastructure job"
+            echo "❌ ERROR: failed to fetch OpenAI key"
             exit 1
           fi
           if [ -z "$SEARCH_ENDPOINT" ]; then
@@ -809,7 +807,7 @@ jobs:
             exit 1
           fi
           if [ -z "$SEARCH_KEY" ]; then
-            echo "❌ ERROR: search_key output is empty from provision-infrastructure job"
+            echo "❌ ERROR: failed to fetch Search key"
             exit 1
           fi
           
@@ -870,6 +868,8 @@ jobs:
           URL=$(az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
           echo "url=https://${URL}" >> $GITHUB_OUTPUT
           echo "✓ Retriever deployed: https://${URL}"
+          
+          unset OPENAI_KEY SEARCH_KEY
 
   deploy-orchestrator:
     needs: [provision-infrastructure, setup-database, build-and-push-images, deploy-retriever]
@@ -897,27 +897,25 @@ jobs:
         id: deploy
         env:
           OPENAI_ENDPOINT: ${{ needs.provision-infrastructure.outputs.openai_endpoint }}
-          OPENAI_KEY: ${{ needs.provision-infrastructure.outputs.openai_key }}
           SQL_SERVER: ${{ needs.provision-infrastructure.outputs.sql_server }}
           SQL_PASSWORD: ${{ secrets.AZURE_SQL_PASSWORD }}
           RETRIEVER_URL: ${{ needs.deploy-retriever.outputs.retriever_url }}
         run: |
           echo "🚀 Deploying Orchestrator Agent..."
           
-          # Mask these now that they're local to this job (safe: this job does
-          # not re-export them as its own job output).
-          echo "::add-mask::${OPENAI_KEY}"
-          echo "::add-mask::${SQL_PASSWORD}"
+          # Job outputs for this key are unreliable across jobs (learning
+          # project - simplest fix is to just re-fetch it here directly).
+          OPENAI_KEY=$(az cognitiveservices account keys list --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query key1 -o tsv)
           
           # Validate all secrets are available
-          echo "Validating secrets from provision-infrastructure job..."
+          echo "Validating secrets..."
           
           if [ -z "$OPENAI_ENDPOINT" ]; then
             echo "❌ ERROR: openai_endpoint output is empty from provision-infrastructure job"
             exit 1
           fi
           if [ -z "$OPENAI_KEY" ]; then
-            echo "❌ ERROR: openai_key output is empty from provision-infrastructure job"
+            echo "❌ ERROR: failed to fetch OpenAI key"
             exit 1
           fi
           if [ -z "$SQL_SERVER" ]; then
@@ -994,6 +992,8 @@ jobs:
           URL=$(az containerapp show --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
           echo "url=https://${URL}" >> $GITHUB_OUTPUT
           echo "✓ Orchestrator deployed: https://${URL}"
+          
+          unset OPENAI_KEY SQL_PASSWORD
 
   upload-documents:
     needs: [provision-infrastructure, deploy-orchestrator]
