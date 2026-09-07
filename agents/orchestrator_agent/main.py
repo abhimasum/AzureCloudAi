@@ -1,50 +1,51 @@
-"""Cloud Run entrypoint for the orchestrator agent.
-
-Serves the same FastAPI app that `adk api_server`/`adk web` use internally, so you get
-the ADK dev UI plus the /run and /run_sse endpoints without shelling out to the `adk`
-CLI from inside the container.
-"""
+"""FastAPI entrypoint for the orchestrator agent, serving it over HTTP with MAF."""
 
 import os
-import sys
 import logging
 
 import uvicorn
 from fastapi import FastAPI
-from google.adk.cli.fast_api import get_fast_api_app
+from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
-SERVE_WEB_INTERFACE = os.environ.get("SERVE_WEB_INTERFACE", "true").lower() == "true"
+app = FastAPI()
+root_agent = None
+_init_error = None
 
 try:
-    logger.info("Initializing FastAPI app with agents...")
-    app = get_fast_api_app(
-        agents_dir=AGENT_DIR,
-        web=SERVE_WEB_INTERFACE,
-        allow_origins=["*"],
-    )
-    logger.info("FastAPI app initialized successfully")
+    logger.info("Initializing orchestrator agent...")
+    from agent import root_agent
+    logger.info("Orchestrator agent initialized successfully")
 except Exception as e:
-    logger.error(f"Failed to initialize FastAPI app: {e}", exc_info=True)
-    # Create a minimal app with health check so container doesn't crash
-    app = FastAPI()
-    
-    @app.get("/health")
-    async def health():
-        return {"status": "degraded", "error": str(e)}
-    
-    @app.get("/")
-    async def root():
-        return {"status": "degraded", "error": str(e)}
+    logger.error(f"Failed to initialize orchestrator agent: {e}", exc_info=True)
+    _init_error = str(e)
 
-# Add health check endpoint if not already present
-if not hasattr(app, "routes"):
-    @app.get("/health")
-    async def health():
-        return {"status": "ok"}
+
+class RunRequest(BaseModel):
+    query: str
+
+
+@app.get("/health")
+async def health():
+    if root_agent is None:
+        return {"status": "degraded", "error": _init_error}
+    return {"status": "ok"}
+
+
+@app.get("/")
+async def root():
+    return await health()
+
+
+@app.post("/run")
+async def run(request: RunRequest):
+    if root_agent is None:
+        return {"response": f"Agent not initialized: {_init_error}"}
+    result = await root_agent.run(request.query)
+    return {"response": str(result)}
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))

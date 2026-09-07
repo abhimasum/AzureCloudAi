@@ -1,88 +1,51 @@
-"""Exposes `retriever_agent` over the A2A protocol as a standalone Starlette app.
+"""FastAPI app exposing `retriever_agent` over HTTP, called by the orchestrator agent.
 
 Run locally with:
     uvicorn a2a_app:a2a_app --port 8081
 
-Served on Cloud Run with the Dockerfile in this folder.
+Served on Azure Container Apps with the Dockerfile in this folder.
 """
 
-import os
-import json
 import logging
 
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
-from starlette.applications import Starlette
-from starlette.routing import Route
-
-from google.adk.a2a.utils.agent_to_a2a import to_a2a
+from fastapi import FastAPI
+from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Get deployment settings
-PORT = int(os.environ.get("PORT", 8081))
-HOST = os.environ.get("HOST", "localhost")
-PUBLIC_URL = os.environ.get("PUBLIC_URL")
+a2a_app = FastAPI()
+root_agent = None
+_init_error = None
 
 try:
-    logger.info("Importing retriever agent...")
+    logger.info("Initializing retriever agent...")
     from agent import root_agent
-    logger.info("Retriever agent imported successfully")
+    logger.info("Retriever agent initialized successfully")
 except Exception as e:
-    logger.error(f"Failed to import retriever agent: {e}", exc_info=True)
-    # Create minimal app so container doesn't crash
-    async def health(request):
-        return JSONResponse({"status": "degraded", "error": str(e)})
-    
-    base_app = Starlette(routes=[Route("/health", health)])
-    root_agent = None
-
-if root_agent:
-    try:
-        logger.info(f"Creating A2A app on {HOST}:{PORT}")
-        base_app = to_a2a(root_agent, host=HOST, port=PORT)
-        logger.info("A2A app created successfully")
-    except Exception as e:
-        logger.error(f"Failed to create A2A app: {e}", exc_info=True)
-        async def health(request):
-            return JSONResponse({"status": "degraded", "error": str(e)})
-        base_app = Starlette(routes=[Route("/health", health)])
+    logger.error(f"Failed to initialize retriever agent: {e}", exc_info=True)
+    _init_error = str(e)
 
 
-class PublicURLMiddleware(BaseHTTPMiddleware):
-    """Middleware to fix the agent card RPC URL for Cloud Run deployments."""
-    
-    async def dispatch(self, request, call_next):
-        response = await call_next(request)
-        
-        # If this is the agent card endpoint and we have PUBLIC_URL, fix the RPC URL
-        if request.url.path == "/.well-known/agent-card.json" and PUBLIC_URL:
-            try:
-                body = b""
-                async for chunk in response.body_iterator:
-                    body += chunk
-                
-                agent_card = json.loads(body)
-                
-                # Replace localhost:8080 with the public URL
-                if "supportedInterfaces" in agent_card:
-                    for interface in agent_card["supportedInterfaces"]:
-                        # Set RPC URL to the PUBLIC_URL
-                        interface["url"] = PUBLIC_URL
-                
-                return JSONResponse(agent_card)
-            except (json.JSONDecodeError, KeyError):
-                # If parsing fails, return original response
-                return response
-        
-        return response
+class RunRequest(BaseModel):
+    query: str
 
 
-# Apply middleware if we have a PUBLIC_URL (Cloud Run deployment)
-if PUBLIC_URL:
-    base_app.add_middleware(PublicURLMiddleware)
+@a2a_app.get("/health")
+async def health():
+    if root_agent is None:
+        return {"status": "degraded", "error": _init_error}
+    return {"status": "ok"}
 
-# Export the final app
-a2a_app = base_app
-logger.info(f"Retriever app ready on port {PORT}")
+
+@a2a_app.get("/")
+async def root():
+    return await health()
+
+
+@a2a_app.post("/run")
+async def run(request: RunRequest):
+    if root_agent is None:
+        return {"response": f"Agent not initialized: {_init_error}"}
+    result = await root_agent.run(request.query)
+    return {"response": str(result)}

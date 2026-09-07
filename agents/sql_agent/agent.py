@@ -7,6 +7,7 @@ retriever agent focus RAG searches. Returns INDEX information only.
 import os
 import pyodbc
 from agent_framework import Agent
+from agent_framework.azure import AzureOpenAIChatClient
 
 
 # Initialize Azure SQL connection
@@ -91,13 +92,14 @@ def list_all_states() -> str:
 
 
 root_agent = Agent(
-    model=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
-    name="sql_agent",
-    description=(
-        "Database specialist that queries Azure SQL for geography index metadata. "
-        "Provides entity IDs and names to help focus RAG searches."
+    client=AzureOpenAIChatClient(
+        endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT"),
+        api_key=os.environ.get("AZURE_OPENAI_API_KEY"),
+        deployment_name=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
     ),
-    instruction="""
+    name="sql_agent",
+    tools=[get_country_info, get_state_info, list_all_states],
+    instructions="""
 You are an Azure SQL database index specialist.
 
 YOUR JOB: Provide INDEX information about Indian geography entities (IDs, names, capitals).

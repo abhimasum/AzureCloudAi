@@ -5,6 +5,7 @@ This agent uses Azure AI Search for semantic vector search over ingested documen
 
 import os
 from agent_framework import Agent
+from agent_framework.azure import AzureOpenAIChatClient
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 
@@ -56,13 +57,14 @@ def search_knowledge_base(query: str, top_k: int = 10) -> str:
 
 
 root_agent = Agent(
-    model=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
-    name="retriever_agent",
-    description=(
-        "Specialist agent that answers questions using Azure AI Search. "
-        "Searches the document knowledge base for detailed information."
+    client=AzureOpenAIChatClient(
+        endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT"),
+        api_key=os.environ.get("AZURE_OPENAI_API_KEY"),
+        deployment_name=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
     ),
-    instruction="""
+    name="retriever_agent",
+    tools=[search_knowledge_base],
+    instructions="""
 You are a document retrieval specialist for Indian geography and culture.
 
 ALWAYS search the knowledge base before answering any question.
