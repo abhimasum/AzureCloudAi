@@ -894,6 +894,16 @@ jobs:
           
           unset OPENAI_KEY SEARCH_KEY
 
+      - name: Diagnose Retriever Startup
+        run: |
+          echo "Waiting for container to start..."
+          sleep 20
+          echo "--- Recent console logs ---"
+          az containerapp logs show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --type console --tail 100 || echo "Could not fetch logs"
+          echo "--- Testing endpoint ---"
+          URL=$(az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          curl -sS -m 15 -o /dev/null -w "HTTP %{http_code}, time %{time_total}s\n" "https://${URL}/" || echo "curl failed"
+
   deploy-orchestrator:
     needs: [provision-infrastructure, setup-database, build-and-push-images, deploy-retriever]
     runs-on: ubuntu-latest
@@ -1024,6 +1034,16 @@ jobs:
           echo "✓ Orchestrator deployed: https://${URL}"
           
           unset OPENAI_KEY SQL_PASSWORD
+
+      - name: Diagnose Orchestrator Startup
+        run: |
+          echo "Waiting for container to start..."
+          sleep 20
+          echo "--- Recent console logs ---"
+          az containerapp logs show --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --type console --tail 100 || echo "Could not fetch logs"
+          echo "--- Testing endpoint ---"
+          URL=$(az containerapp show --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          curl -sS -m 15 -o /dev/null -w "HTTP %{http_code}, time %{time_total}s\n" "https://${URL}/" || echo "curl failed"
 
   upload-documents:
     needs: [provision-infrastructure, deploy-orchestrator]
