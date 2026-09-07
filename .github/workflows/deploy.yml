@@ -687,6 +687,22 @@ jobs:
       - name: Install dependencies
         run: pip install pyodbc
 
+      - name: Allow GitHub runner IP through SQL firewall
+        run: |
+          # GitHub-hosted runners are NOT Azure services, so the special
+          # "AllowAzureServices" (0.0.0.0) rule does not cover them - and that
+          # rule is only ever created the first time the SQL server itself is
+          # created, so it's skipped entirely on later runs. Always add a
+          # rule for this run's actual public IP instead.
+          RUNNER_IP=$(curl -s https://ifconfig.me)
+          echo "Runner public IP: ${RUNNER_IP}"
+          az sql server firewall-rule create \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --server ${{ env.SQL_SERVER_NAME }} \
+            --name AllowGitHubRunner \
+            --start-ip-address "${RUNNER_IP}" \
+            --end-ip-address "${RUNNER_IP}"
+
       - name: Setup SQL Database Schema
         run: |
           echo "🗄️ Setting up SQL database schema..."
