@@ -12,13 +12,19 @@ from azure.core.credentials import AzureKeyCredential
 # Azure AI Search configuration
 _search_endpoint = os.environ.get("AZURE_SEARCH_ENDPOINT")  # e.g., "https://mysearch.search.windows.net"
 _search_key = os.environ.get("AZURE_SEARCH_KEY")
-_search_index = os.environ.get("AZURE_SEARCH_INDEX", "geography-docs")
+_search_index = os.environ.get("AZURE_SEARCH_INDEX", "documents")
 
-search_client = SearchClient(
-    endpoint=_search_endpoint,
-    index_name=_search_index,
-    credential=AzureKeyCredential(_search_key)
-) if _search_endpoint and _search_key else None
+search_client = None
+if _search_endpoint and _search_key:
+    try:
+        search_client = SearchClient(
+            endpoint=_search_endpoint,
+            index_name=_search_index,
+            credential=AzureKeyCredential(_search_key)
+        )
+    except Exception as e:
+        # Log but don't crash on startup - search will fail gracefully at request time
+        print(f"Warning: Failed to connect to Azure AI Search: {e}", flush=True)
 
 
 def search_knowledge_base(query: str, top_k: int = 10) -> str:
