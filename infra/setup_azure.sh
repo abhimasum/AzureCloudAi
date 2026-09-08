@@ -35,8 +35,8 @@ echo -e "${YELLOW}=== Configuration ===${NC}"
 read -p "Resource Group name [azure-ai-agents]: " RESOURCE_GROUP
 RESOURCE_GROUP=${RESOURCE_GROUP:-azure-ai-agents}
 
-read -p "Location [westeurope]: " LOCATION
-LOCATION=${LOCATION:-westeurope}
+read -p "Location [northeurope]: " LOCATION
+LOCATION=${LOCATION:-northeurope}
 
 read -p "SQL Server name [ai-agents-sql-$(date +%s)]: " SQL_SERVER
 SQL_SERVER=${SQL_SERVER:-ai-agents-sql-$(date +%s)}
