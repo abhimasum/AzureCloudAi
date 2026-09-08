@@ -24,6 +24,7 @@ env:
   AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
   AZURE_RESOURCE_GROUP: azure-ai-agents
   AZURE_LOCATION: northeurope
+  REGIONS: "northeurope westeurope uksouth centralindia southindia eastus eastus2 westus canadacentral"
   ACR_NAME: aiagentsacr
   CONTAINER_ENV: ai-agents-env
   SQL_SERVER_NAME: ai-agents-sql
@@ -166,37 +167,67 @@ jobs:
           fi
           
           echo "Creating SQL Server ${{ env.SQL_SERVER_NAME }}..."
+          echo "Trying regions: ${{ env.REGIONS }}"
+          echo ""
           
-          # Create SQL Server with retry logic
-          MAX_ATTEMPTS=3
-          ATTEMPT=1
-          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-            echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+          # Array of regions to try
+          REGIONS=(${{ env.REGIONS }})
+          SUCCESSFUL=false
+          USED_REGION=""
+          
+          for REGION in "${REGIONS[@]}"; do
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Attempting provisioning in region: $REGION"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
-            az sql server create \
-              --name ${{ env.SQL_SERVER_NAME }} \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --location ${{ env.AZURE_LOCATION }} \
-              --admin-user sqladmin \
-              --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1
+            MAX_ATTEMPTS=3
+            ATTEMPT=1
+            while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+              echo "Attempt $ATTEMPT of $MAX_ATTEMPTS in $REGION..."
+              
+              OUTPUT=$(az sql server create \
+                --name ${{ env.SQL_SERVER_NAME }} \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location $REGION \
+                --admin-user sqladmin \
+                --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1)
+              
+              if [ $? -eq 0 ]; then
+                echo "✓ SQL Server created successfully in $REGION"
+                SUCCESSFUL=true
+                USED_REGION=$REGION
+                break
+              fi
+              
+              # Check if error is due to region not accepting provisioning
+              if echo "$OUTPUT" | grep -q "RegionDoesNotAllowProvisioning"; then
+                echo "⚠️ Region $REGION is not accepting SQL Server creation"
+                echo "Trying next region..."
+                break
+              fi
+              
+              if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+                echo "⚠️ Creation failed, retrying in 15 seconds..."
+                sleep 15
+              fi
+              
+              ATTEMPT=$((ATTEMPT + 1))
+            done
             
-            if [ $? -eq 0 ]; then
-              echo "✓ SQL Server created successfully"
+            if [ "$SUCCESSFUL" = true ]; then
               break
             fi
-            
-            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
-              echo "⚠️ Creation failed, retrying in 15 seconds..."
-              sleep 15
-            fi
-            
-            ATTEMPT=$((ATTEMPT + 1))
+            echo ""
           done
           
-          if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
-            echo "❌ Failed to create SQL Server after $MAX_ATTEMPTS attempts"
+          if [ "$SUCCESSFUL" = false ]; then
+            echo "❌ Failed to create SQL Server in any region"
             exit 1
           fi
+          
+          echo ""
+          echo "✓ SQL Server created in region: $USED_REGION"
+          echo ""
           
           # Add firewall rule
           echo "Adding firewall rule for Azure services..."
@@ -208,6 +239,7 @@ jobs:
             --end-ip-address 0.0.0.0
           
           echo "sql_server=${{ env.SQL_SERVER_NAME }}" >> $GITHUB_OUTPUT
+          echo "deployment_region=$USED_REGION" >> $GITHUB_OUTPUT
           echo "✓ SQL Server setup complete"
 
       - name: Check and Create SQL Database
@@ -656,7 +688,7 @@ jobs:
           echo "✅ INFRASTRUCTURE READY"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "Resource Group: ${{ env.AZURE_RESOURCE_GROUP }}"
-          echo "Location: ${{ env.AZURE_LOCATION }}"
+          echo "Region Used: ${{ steps.sql.outputs.deployment_region || env.AZURE_LOCATION }}"
           echo "SQL Server: ${{ steps.sql.outputs.sql_server }}"
           echo "ACR: ${{ steps.infra.outputs.acr_login_server }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
