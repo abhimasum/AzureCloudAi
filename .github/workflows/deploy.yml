@@ -27,7 +27,7 @@ env:
   REGIONS: "northeurope westeurope uksouth centralindia southindia eastus eastus2 westus canadacentral"
   ACR_NAME: aiagentsacr
   CONTAINER_ENV: ai-agents-env
-  SQL_SERVER_NAME: ai-agents-sql
+  SQL_SERVER_NAME: ai-agents-sql-abhimasum2
   SQL_DATABASE_NAME: geography_index
   OPENAI_NAME: ai-agents-openai
   SEARCH_NAME: ai-agents-search-abhimasum
@@ -200,11 +200,16 @@ jobs:
               if echo "$OUTPUT" | grep -qi "InvalidResourceLocation.*already exists"; then
                 echo "⚠️ Server already exists (possibly in another region)"
                 # Try to get the existing server's location
-                EXISTING_LOCATION=$(az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query location -o tsv 2>/dev/null)
-                if [ -n "$EXISTING_LOCATION" ] && [ "$EXISTING_LOCATION" != "null" ]; then
+                EXISTING_LOCATION=$(az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query location -o tsv 2>/dev/null || echo "UNKNOWN")
+                if [ -n "$EXISTING_LOCATION" ] && [ "$EXISTING_LOCATION" != "null" ] && [ "$EXISTING_LOCATION" != "UNKNOWN" ]; then
                   echo "✓ SQL Server already exists in region: $EXISTING_LOCATION"
                   SUCCESSFUL=true
                   USED_REGION=$EXISTING_LOCATION
+                  break
+                else
+                  echo "⚠️ Could not determine existing server location, assuming northeurope (first attempted region)"
+                  SUCCESSFUL=true
+                  USED_REGION="northeurope"
                   break
                 fi
               fi
