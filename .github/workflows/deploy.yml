@@ -27,7 +27,7 @@ env:
   REGIONS: "northeurope westeurope uksouth centralindia southindia westindia eastus eastus2 westus canadacentral"
   ACR_NAME: aiagentsacr
   CONTAINER_ENV: ai-agents-env
-  SQL_SERVER_NAME: ai-agents-sql-abhimasum3
+  COSMOSDB_ACCOUNT_NAME: ai-agents-cosmosdb
   SQL_DATABASE_NAME: geography_index
   OPENAI_NAME: ai-agents-openai
   SEARCH_NAME: ai-agents-search-abhimasum
@@ -40,7 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       acr_login_server: ${{ steps.infra.outputs.acr_login_server }}
-      sql_server: ${{ steps.sql.outputs.sql_server }}
+      cosmosdb_connection_string: ${{ steps.cosmosdb.outputs.cosmosdb_connection_string }}
+      cosmosdb_account: ${{ steps.cosmosdb.outputs.cosmosdb_account }}
       openai_endpoint: ${{ steps.openai.outputs.endpoint }}
       openai_key: ${{ steps.openai.outputs.key }}
       search_endpoint: ${{ steps.search.outputs.endpoint }}
@@ -151,103 +152,103 @@ jobs:
           echo "❌ Failed to verify Resource Group after $MAX_RETRIES attempts"
           exit 1
 
-      - name: Check and Create Azure SQL Server
-        id: sql
+      - name: Check and Create Cosmos DB (SQL API)
+        id: cosmosdb
         run: |
-          echo "🗄️ Checking Azure SQL Server: ${{ env.SQL_SERVER_NAME }}"
+          echo "🗄️ Checking Cosmos DB Account: ${{ env.COSMOSDB_ACCOUNT_NAME }}"
           
           # Wait for resource group to be fully ready
           sleep 5
           
-          # Check if server exists
-          if az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
-            echo "✓ SQL Server ${{ env.SQL_SERVER_NAME }} exists"
-            echo "sql_server=${{ env.SQL_SERVER_NAME }}" >> $GITHUB_OUTPUT
+          # Check if Cosmos DB account exists
+          if az cosmosdb show --name ${{ env.COSMOSDB_ACCOUNT_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ Cosmos DB account ${{ env.COSMOSDB_ACCOUNT_NAME }} exists"
+            echo "cosmosdb_account=${{ env.COSMOSDB_ACCOUNT_NAME }}" >> $GITHUB_OUTPUT
             exit 0
           fi
           
-          echo "Creating SQL Server ${{ env.SQL_SERVER_NAME }} in ${{ env.AZURE_LOCATION }}..."
+          echo "Creating Cosmos DB account ${{ env.COSMOSDB_ACCOUNT_NAME }} in ${{ env.AZURE_LOCATION }}..."
           
           # Run command and capture output (|| true prevents script exit on error)
-          OUTPUT=$(az sql server create \
-            --name ${{ env.SQL_SERVER_NAME }} \
+          OUTPUT=$(az cosmosdb create \
+            --name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --location ${{ env.AZURE_LOCATION }} \
-            --admin-user sqladmin \
-            --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1 || true)
+            --locations locationName=${{ env.AZURE_LOCATION }} failoverPriority=0 isZoneRedundant=false \
+            --default-consistency-level Session 2>&1 || true)
           
           # Log output for debugging
           echo "$OUTPUT"
           
-          # Check if server was actually created by trying to show it
-          if az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
-            echo "✓ SQL Server created successfully in ${{ env.AZURE_LOCATION }}"
-            USED_REGION="${{ env.AZURE_LOCATION }}"
+          # Check if Cosmos DB was actually created by trying to show it
+          if az cosmosdb show --name ${{ env.COSMOSDB_ACCOUNT_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ Cosmos DB account created successfully in ${{ env.AZURE_LOCATION }}"
           else
-            echo "❌ Failed to create SQL Server in ${{ env.AZURE_LOCATION }}"
+            echo "❌ Failed to create Cosmos DB account in ${{ env.AZURE_LOCATION }}"
             echo "Error output:"
             echo "$OUTPUT" | tail -5
             exit 1
           fi
           
           echo ""
-          echo "✓ SQL Server created in region: $USED_REGION"
+          echo "✓ Cosmos DB account created in region: ${{ env.AZURE_LOCATION }}"
           echo ""
           
-          # Add firewall rule
-          echo "Adding firewall rule for Azure services..."
-          az sql server firewall-rule create \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --server ${{ env.SQL_SERVER_NAME }} \
-            --name AllowAzureServices \
-            --start-ip-address 0.0.0.0 \
-            --end-ip-address 0.0.0.0
+          # Get Cosmos DB connection string
+          echo "Getting Cosmos DB connection string..."
+          COSMOSDB_CONNECTION_STRING=$(az cosmosdb keys list --name ${{ env.COSMOSDB_ACCOUNT_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --type connection-strings --output tsv 2>/dev/null | cut -f1)
           
-          echo "sql_server=${{ env.SQL_SERVER_NAME }}" >> $GITHUB_OUTPUT
-          echo "deployment_region=$USED_REGION" >> $GITHUB_OUTPUT
-          echo "✓ SQL Server setup complete"
-
-      - name: Check and Create SQL Database
-        run: |
-          echo "📊 Checking SQL Database: ${{ env.SQL_DATABASE_NAME }}"
-          
-          if az sql db show --name ${{ env.SQL_DATABASE_NAME }} --server ${{ steps.sql.outputs.sql_server }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
-            echo "✓ Database ${{ env.SQL_DATABASE_NAME }} exists"
-            exit 0
+          if [ -z "$COSMOSDB_CONNECTION_STRING" ] || [ "$COSMOSDB_CONNECTION_STRING" = "null" ]; then
+            echo "❌ Failed to get Cosmos DB connection string"
+            exit 1
           fi
           
+          echo "cosmosdb_connection_string=$COSMOSDB_CONNECTION_STRING" >> $GITHUB_OUTPUT
+          echo "cosmosdb_account=${{ env.COSMOSDB_ACCOUNT_NAME }}" >> $GITHUB_OUTPUT
+          echo "✓ Cosmos DB setup complete"
+
+      - name: Create Cosmos DB Database and Containers
+        run: |
+          echo "📊 Creating Cosmos DB Database: ${{ env.SQL_DATABASE_NAME }}"
+          
+          # Get Cosmos DB connection string
+          COSMOSDB_CONNECTION_STRING=$(az cosmosdb keys list --name ${{ env.COSMOSDB_ACCOUNT_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --type connection-strings --output tsv 2>/dev/null | cut -f1)
+          
+          if [ -z "$COSMOSDB_CONNECTION_STRING" ] || [ "$COSMOSDB_CONNECTION_STRING" = "null" ]; then
+            echo "❌ Failed to get Cosmos DB connection string"
+            exit 1
+          fi
+          
+          # Create database using Azure CLI
           echo "Creating database ${{ env.SQL_DATABASE_NAME }}..."
+          az cosmosdb sql-database create \
+            --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name ${{ env.SQL_DATABASE_NAME }} 2>&1
           
-          MAX_ATTEMPTS=3
-          ATTEMPT=1
-          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-            echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
-            
-            az sql db create \
-              --name ${{ env.SQL_DATABASE_NAME }} \
-              --server ${{ steps.sql.outputs.sql_server }} \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --edition GeneralPurpose \
-              --compute-model Serverless \
-              --family Gen5 \
-              --capacity 2 \
-              --auto-pause-delay 60 2>&1
-            
-            if [ $? -eq 0 ]; then
-              echo "✓ Database created successfully"
-              exit 0
-            fi
-            
-            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
-              echo "⚠️ Creation failed, retrying in 10 seconds..."
-              sleep 10
-            fi
-            
-            ATTEMPT=$((ATTEMPT + 1))
-          done
+          if [ $? -eq 0 ]; then
+            echo "✓ Database created successfully"
+          else
+            echo "⚠️ Database may already exist, continuing..."
+          fi
           
-          echo "❌ Failed to create database after $MAX_ATTEMPTS attempts"
-          exit 1
+          # Create containers using Azure CLI
+          echo "Creating 'countries' container..."
+          az cosmosdb sql-container create \
+            --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --database-name ${{ env.SQL_DATABASE_NAME }} \
+            --name countries \
+            --partition-key-path /id 2>&1
+          
+          echo "Creating 'states' container..."
+          az cosmosdb sql-container create \
+            --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --database-name ${{ env.SQL_DATABASE_NAME }} \
+            --name states \
+            --partition-key-path /id 2>&1
+          
+          echo "✓ Cosmos DB database and containers created"
 
       - name: Purge Soft-Deleted OpenAI Resources
         run: |
@@ -653,8 +654,8 @@ jobs:
           echo "✅ INFRASTRUCTURE READY"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "Resource Group: ${{ env.AZURE_RESOURCE_GROUP }}"
-          echo "Region Used: ${{ steps.sql.outputs.deployment_region || env.AZURE_LOCATION }}"
-          echo "SQL Server: ${{ steps.sql.outputs.sql_server }}"
+          echo "Region Used: ${{ env.AZURE_LOCATION }}"
+          echo "Cosmos DB: ${{ steps.cosmosdb.outputs.cosmosdb_account }}"
           echo "ACR: ${{ steps.infra.outputs.acr_login_server }}"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
@@ -669,53 +670,45 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install ODBC Driver 18 for SQL Server
+      - name: Verify Cosmos DB Database and Containers
         run: |
-          curl https://packages.microsoft.com/keys/microsoft.asc | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc
-          curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-          sudo apt-get update
-          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
-
-      - name: Install dependencies
-        run: pip install pyodbc
-
-      - name: Allow GitHub runner IP through SQL firewall
-        run: |
-          # GitHub-hosted runners are NOT Azure services, so the special
-          # "AllowAzureServices" (0.0.0.0) rule does not cover them - and that
-          # rule is only ever created the first time the SQL server itself is
-          # created, so it's skipped entirely on later runs. Always add a
-          # rule for this run's actual public IP instead.
-          RUNNER_IP=$(curl -s https://ifconfig.me)
-          echo "Runner public IP: ${RUNNER_IP}"
-          az sql server firewall-rule create \
+          echo "🗄️ Verifying Cosmos DB Database: ${{ env.SQL_DATABASE_NAME }}"
+          
+          # Verify database exists
+          az cosmosdb sql-database show \
+            --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --server ${{ env.SQL_SERVER_NAME }} \
-            --name AllowGitHubRunner \
-            --start-ip-address "${RUNNER_IP}" \
-            --end-ip-address "${RUNNER_IP}"
-
-      - name: Setup SQL Database Schema
-        run: |
-          echo "🗄️ Setting up SQL database schema..."
-          python infra/setup_azure_sql.py
-        env:
-          AZURE_SQL_SERVER: ${{ env.SQL_SERVER_NAME }}.database.windows.net
-          AZURE_SQL_DATABASE: ${{ env.SQL_DATABASE_NAME }}
-          AZURE_SQL_USERNAME: sqladmin
-          AZURE_SQL_PASSWORD: ${{ secrets.AZURE_SQL_PASSWORD }}
-
-      - name: Verify Database Setup
-        run: |
-          echo "✓ Database schema setup complete"
-          echo "  • Countries table: 1 row"
-          echo "  • States table: 36 rows"
-          echo "  • Districts table: 13 rows"
+            --name ${{ env.SQL_DATABASE_NAME }} -o none 2>/dev/null || {
+            echo "❌ Cosmos DB database not found"
+            exit 1
+          }
+          echo "✓ Database verified"
+          
+          # Verify countries container exists
+          az cosmosdb sql-container show \
+            --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --database-name ${{ env.SQL_DATABASE_NAME }} \
+            --name countries -o none 2>/dev/null || {
+            echo "❌ Countries container not found"
+            exit 1
+          }
+          echo "✓ Countries container verified"
+          
+          # Verify states container exists
+          az cosmosdb sql-container show \
+            --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --database-name ${{ env.SQL_DATABASE_NAME }} \
+            --name states -o none 2>/dev/null || {
+            echo "❌ States container not found"
+            exit 1
+          }
+          echo "✓ States container verified"
+          
+          echo "✓ Cosmos DB setup complete"
+          echo "  • Database: geography_index"
+          echo "  • Containers: countries, states"
 
   build-and-push-images:
     needs: provision-infrastructure
@@ -927,8 +920,7 @@ jobs:
         id: deploy
         env:
           OPENAI_ENDPOINT: ${{ needs.provision-infrastructure.outputs.openai_endpoint }}
-          SQL_SERVER: ${{ needs.provision-infrastructure.outputs.sql_server }}
-          SQL_PASSWORD: ${{ secrets.AZURE_SQL_PASSWORD }}
+          COSMOSDB_CONNECTION_STRING: ${{ needs.provision-infrastructure.outputs.cosmosdb_connection_string }}
           RETRIEVER_URL: ${{ needs.deploy-retriever.outputs.retriever_url }}
         run: |
           echo "🚀 Deploying Orchestrator Agent..."
@@ -948,12 +940,8 @@ jobs:
             echo "❌ ERROR: failed to fetch OpenAI key"
             exit 1
           fi
-          if [ -z "$SQL_SERVER" ]; then
-            echo "❌ ERROR: sql_server output is empty from provision-infrastructure job"
-            exit 1
-          fi
-          if [ -z "$SQL_PASSWORD" ]; then
-            echo "❌ ERROR: AZURE_SQL_PASSWORD secret is not set"
+          if [ -z "$COSMOSDB_CONNECTION_STRING" ]; then
+            echo "❌ ERROR: cosmosdb_connection_string output is empty from provision-infrastructure job"
             exit 1
           fi
           if [ -z "$RETRIEVER_URL" ]; then
@@ -971,8 +959,7 @@ jobs:
               --secrets \
                 openai-endpoint="$OPENAI_ENDPOINT" \
                 openai-key="$OPENAI_KEY" \
-                sql-server="${SQL_SERVER}.database.windows.net" \
-                sql-password="$SQL_PASSWORD"
+                cosmosdb-connection-string="$COSMOSDB_CONNECTION_STRING"
 
             az containerapp update \
               --name orchestrator \
@@ -982,10 +969,8 @@ jobs:
                 AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
                 AZURE_OPENAI_API_KEY=secretref:openai-key \
                 AZURE_OPENAI_DEPLOYMENT=gpt-4o \
-                AZURE_SQL_SERVER=secretref:sql-server \
-                AZURE_SQL_DATABASE=${{ env.SQL_DATABASE_NAME }} \
-                AZURE_SQL_USERNAME=sqladmin \
-                AZURE_SQL_PASSWORD=secretref:sql-password \
+                COSMOSDB_CONNECTION_STRING=secretref:cosmosdb-connection-string \
+                COSMOSDB_DATABASE_NAME=${{ env.SQL_DATABASE_NAME }} \
                 RETRIEVER_URL="$RETRIEVER_URL" \
                 PORT=${{ env.ORCHESTRATOR_PORT }}
           else
@@ -1008,17 +993,14 @@ jobs:
                 AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
                 AZURE_OPENAI_API_KEY=secretref:openai-key \
                 AZURE_OPENAI_DEPLOYMENT=gpt-4o \
-                AZURE_SQL_SERVER=secretref:sql-server \
-                AZURE_SQL_DATABASE=${{ env.SQL_DATABASE_NAME }} \
-                AZURE_SQL_USERNAME=sqladmin \
-                AZURE_SQL_PASSWORD=secretref:sql-password \
+                COSMOSDB_CONNECTION_STRING=secretref:cosmosdb-connection-string \
+                COSMOSDB_DATABASE_NAME=${{ env.SQL_DATABASE_NAME }} \
                 RETRIEVER_URL="$RETRIEVER_URL" \
                 PORT=${{ env.ORCHESTRATOR_PORT }} \
               --secrets \
                 openai-endpoint="$OPENAI_ENDPOINT" \
                 openai-key="$OPENAI_KEY" \
-                sql-server="${SQL_SERVER}.database.windows.net" \
-                sql-password="$SQL_PASSWORD"
+                cosmosdb-connection-string="$COSMOSDB_CONNECTION_STRING"
           fi
           
           # Restart container to ensure it picks up environment changes
@@ -1030,7 +1012,7 @@ jobs:
           echo "url=https://${URL}" >> $GITHUB_OUTPUT
           echo "✓ Orchestrator deployed: https://${URL}"
           
-          unset OPENAI_KEY SQL_PASSWORD
+          unset OPENAI_KEY COSMOSDB_CONNECTION_STRING
 
       - name: Diagnose Orchestrator Startup
         run: |
@@ -1092,7 +1074,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
           echo "📦 Deployed Services:"
-          echo "   ✓ Azure SQL Database (36 states/UTs)"
+          echo "   ✓ Azure Cosmos DB (SQL API) - geography_index"
           echo "   ✓ Retriever Agent (A2A): ${{ steps.retriever.outputs.url }}"
           echo "   ✓ Orchestrator Agent: ${{ needs.deploy-orchestrator.outputs.orchestrator_url }}"
           echo "   ✓ Sample documents uploaded to Blob Storage"

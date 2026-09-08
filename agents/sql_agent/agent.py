@@ -1,92 +1,113 @@
-"""Azure SQL agent: queries Azure SQL Database for geography index metadata.
+"""Cosmos DB SQL API agent: queries Cosmos DB for geography index metadata.
 
 This agent provides entity IDs and names from the database to help the 
 retriever agent focus RAG searches. Returns INDEX information only.
 """
 
 import os
-import pyodbc
+from azure.cosmos import CosmosClient, PartitionKey, exceptions
 from agent_framework import Agent
 from agent_framework.azure import AzureOpenAIChatClient
 
 
-# Initialize Azure SQL connection
-_sql_server = os.environ.get("AZURE_SQL_SERVER")  # e.g., "myserver.database.windows.net"
-_sql_database = os.environ.get("AZURE_SQL_DATABASE", "geography_index")
-_sql_user = os.environ.get("AZURE_SQL_USER")
-_sql_password = os.environ.get("AZURE_SQL_PASSWORD")
+# Initialize Cosmos DB connection
+_cosmos_connection_string = os.environ.get("COSMOSDB_CONNECTION_STRING")
+_cosmos_database_name = os.environ.get("COSMOSDB_DATABASE_NAME", "geography_index")
 
-_connection_string = (
-    f"Driver={{ODBC Driver 18 for SQL Server}};"
-    f"Server=tcp:{_sql_server},1433;"
-    f"Database={_sql_database};"
-    f"Uid={_sql_user};"
-    f"Pwd={_sql_password};"
-    f"Encrypt=yes;"
-    f"TrustServerCertificate=no;"
-    f"Connection Timeout=30;"
-) if all([_sql_server, _sql_user, _sql_password]) else None
+_client = None
+_countries_container = None
+_states_container = None
+
+if _cosmos_connection_string:
+    try:
+        _client = CosmosClient.from_connection_string(_cosmos_connection_string)
+        _database = _client.get_database_client(_cosmos_database_name)
+        _countries_container = _database.get_container_client("countries")
+        _states_container = _database.get_container_client("states")
+    except Exception as e:
+        print(f"Warning: Could not connect to Cosmos DB: {e}")
 
 
 def get_country_info(country_name: str = "India") -> str:
     """Get country index from database."""
-    if not _connection_string:
+    if not _countries_container:
         return "Country: India (ID: 1, Capital: New Delhi)"
     
     try:
-        with pyodbc.connect(_connection_string) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, name, capital FROM countries WHERE LOWER(name) = LOWER(?)",
-                (country_name,)
-            )
-            row = cursor.fetchone()
-            
-            if row:
-                return f"Country: {row.name} (ID: {row.id}, Capital: {row.capital})"
-            return f"Country '{country_name}' not found in database"
+        # Query by name
+        items = list(_countries_container.query_items(
+            query="SELECT * FROM c WHERE LOWER(c.name) = LOWER(@name)",
+            parameters=[{"name": "@name", "value": country_name}],
+            enable_cross_partition_query=True
+        ))
+        
+        if items:
+            item = items[0]
+            return f"Country: {item['name']} (ID: {item['id']}, Capital: {item.get('capital', 'N/A')})"
+        return f"Country '{country_name}' not found in database"
+    except exceptions.CosmosHttpResponseError as e:
+        return f"Database error: {str(e)}"
     except Exception as e:
         return f"Database error: {str(e)}"
 
 
 def get_state_info(state_name: str) -> str:
     """Get state index from database."""
-    if not _connection_string:
+    if not _states_container:
         return f"State: {state_name} (database query not available)"
     
     try:
-        with pyodbc.connect(_connection_string) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT s.id, s.name, s.capital, c.name as country_name
-                FROM states s
-                JOIN countries c ON s.country_id = c.id
-                WHERE LOWER(s.name) = LOWER(?) OR LOWER(s.name) LIKE LOWER(?)
-            """, (state_name, f"%{state_name}%"))
-            row = cursor.fetchone()
+        # Query by name (supports partial matches)
+        items = list(_states_container.query_items(
+            query="SELECT * FROM c WHERE LOWER(c.name) = LOWER(@name) OR LOWER(c.name) LIKE LOWER(@pattern)",
+            parameters=[
+                {"name": "@name", "value": state_name},
+                {"name": "@pattern", "value": f"%{state_name}%"}
+            ],
+            enable_cross_partition_query=True,
+            max_item_count=1
+        ))
+        
+        if items:
+            item = items[0]
+            country_id = item.get('country_id', 1)
+            # Get country name
+            country_name = "India"
+            if _countries_container:
+                country_items = list(_countries_container.query_items(
+                    query="SELECT * FROM c WHERE c.id = @id",
+                    parameters=[{"name": "@id", "value": country_id}],
+                    enable_cross_partition_query=True
+                ))
+                if country_items:
+                    country_name = country_items[0].get('name', 'India')
             
-            if row:
-                return f"State: {row.name} (ID: {row.id}, Capital: {row.capital}, Country: {row.country_name})"
-            return f"State '{state_name}' not found in database"
+            return f"State: {item['name']} (ID: {item['id']}, Capital: {item.get('capital', 'N/A')}, Country: {country_name})"
+        return f"State '{state_name}' not found in database"
+    except exceptions.CosmosHttpResponseError as e:
+        return f"Database error: {str(e)}"
     except Exception as e:
         return f"Database error: {str(e)}"
 
 
 def list_all_states() -> str:
     """List all states from database."""
-    if not _connection_string:
+    if not _states_container:
         return "Database query not available - 28 states exist in India"
     
     try:
-        with pyodbc.connect(_connection_string) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, name, capital FROM states ORDER BY name")
-            rows = cursor.fetchall()
-            
-            if rows:
-                states_list = [f"- {row.name} (Capital: {row.capital})" for row in rows]
-                return f"India has {len(rows)} states:\n" + "\n".join(states_list)
-            return "No states found in database"
+        # Query all states ordered by name
+        items = list(_states_container.query_items(
+            query="SELECT * FROM c ORDER BY c.name ASC",
+            enable_cross_partition_query=True
+        ))
+        
+        if items:
+            states_list = [f"- {item['name']} (Capital: {item.get('capital', 'N/A')})" for item in items]
+            return f"India has {len(items)} states:\n" + "\n".join(states_list)
+        return "No states found in database"
+    except exceptions.CosmosHttpResponseError as e:
+        return f"Database error: {str(e)}"
     except Exception as e:
         return f"Database error: {str(e)}"
 
@@ -100,11 +121,11 @@ root_agent = Agent(
     name="sql_agent",
     tools=[get_country_info, get_state_info, list_all_states],
     instructions="""
-You are an Azure SQL database index specialist.
+You are an Azure Cosmos DB SQL API database index specialist.
 
 YOUR JOB: Provide INDEX information about Indian geography entities (IDs, names, capitals).
 
-DATABASE REFERENCE (All 28 states available in Azure SQL):
+DATABASE REFERENCE (All 28 states available in Cosmos DB):
 1. Andhra Pradesh (ID: 1, Capital: Amaravati)
 2. Arunachal Pradesh (ID: 2, Capital: Itanagar)
 3. Assam (ID: 3, Capital: Dispur)
