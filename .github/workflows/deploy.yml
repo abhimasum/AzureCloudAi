@@ -199,17 +199,22 @@ jobs:
               # Check if error is because server already exists in a different region
               if echo "$OUTPUT" | grep -qi "InvalidResourceLocation.*already exists"; then
                 echo "⚠️ Server already exists (possibly in another region)"
-                # Try to get the existing server's location
-                EXISTING_LOCATION=$(az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query location -o tsv 2>/dev/null || echo "UNKNOWN")
-                if [ -n "$EXISTING_LOCATION" ] && [ "$EXISTING_LOCATION" != "null" ] && [ "$EXISTING_LOCATION" != "UNKNOWN" ]; then
-                  echo "✓ SQL Server already exists in region: $EXISTING_LOCATION"
-                  SUCCESSFUL=true
-                  USED_REGION=$EXISTING_LOCATION
-                  break
+                # Verify server actually exists and get its location
+                if az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+                  EXISTING_LOCATION=$(az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query location -o tsv 2>/dev/null || echo "UNKNOWN")
+                  if [ -n "$EXISTING_LOCATION" ] && [ "$EXISTING_LOCATION" != "null" ] && [ "$EXISTING_LOCATION" != "UNKNOWN" ]; then
+                    echo "✓ SQL Server already exists in region: $EXISTING_LOCATION"
+                    SUCCESSFUL=true
+                    USED_REGION=$EXISTING_LOCATION
+                  else
+                    echo "⚠️ Could not determine existing server location, assuming northeurope"
+                    SUCCESSFUL=true
+                    USED_REGION="northeurope"
+                  fi
                 else
-                  echo "⚠️ Could not determine existing server location, assuming northeurope (first attempted region)"
-                  SUCCESSFUL=true
-                  USED_REGION="northeurope"
+                  echo "⚠️ Server reported as existing but cannot verify - continuing to next region"
+                fi
+                if [ "$SUCCESSFUL" = true ]; then
                   break
                 fi
               fi
