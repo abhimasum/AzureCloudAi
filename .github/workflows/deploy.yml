@@ -180,79 +180,35 @@ jobs:
             echo "Attempting provisioning in region: $REGION"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
-            MAX_ATTEMPTS=3
-            ATTEMPT=1
-            while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-              echo "Attempt $ATTEMPT of $MAX_ATTEMPTS in $REGION..."
-              
-              # Run command and capture output (|| true prevents script exit on error)
-              OUTPUT=$(az sql server create \
-                --name ${{ env.SQL_SERVER_NAME }} \
-                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-                --location $REGION \
-                --admin-user sqladmin \
-                --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1 || true)
-              
-              # Log output for debugging
-              echo "$OUTPUT"
-              
-              # Check if error is because server already exists in a different region
-              if echo "$OUTPUT" | grep -qi "InvalidResourceLocation.*already exists"; then
-                echo "⚠️ Server already exists (possibly in another region)"
-                # Verify server actually exists and get its location
-                if az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
-                  EXISTING_LOCATION=$(az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query location -o tsv 2>/dev/null || echo "UNKNOWN")
-                  if [ -n "$EXISTING_LOCATION" ] && [ "$EXISTING_LOCATION" != "null" ] && [ "$EXISTING_LOCATION" != "UNKNOWN" ]; then
-                    echo "✓ SQL Server already exists in region: $EXISTING_LOCATION"
-                    SUCCESSFUL=true
-                    USED_REGION=$EXISTING_LOCATION
-                  else
-                    echo "⚠️ Could not determine existing server location, assuming northeurope"
-                    SUCCESSFUL=true
-                    USED_REGION="northeurope"
-                  fi
-                else
-                  echo "⚠️ Server reported as existing but cannot verify - continuing to next region"
-                fi
-                if [ "$SUCCESSFUL" = true ]; then
-                  break
-                fi
-              fi
-              
-              # Check if server was actually created by trying to show it
-              if az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
-                echo "✓ SQL Server created successfully in $REGION"
-                SUCCESSFUL=true
-                USED_REGION=$REGION
-                break
-              fi
-              
-              # Log error output for debugging
-              echo "⚠️ Server not found after creation attempt in $REGION (attempt $ATTEMPT)"
-              echo "Error output:"
-              echo "$OUTPUT" | tail -10
-              
-              # Check if error is due to region not accepting provisioning
-              if echo "$OUTPUT" | grep -qi "RegionDoesNotAllowProvisioning\|region.*unavailable\|capacity.*exhausted\|no capacity\|not available in"; then
-                echo "⚠️ Region $REGION is not accepting SQL Server creation (capacity/resource issue)"
-              fi
-              
-              ATTEMPT=$((ATTEMPT + 1))
-              
-              # Retry in same region if attempts remain
-              if [ $ATTEMPT -le $MAX_ATTEMPTS ]; then
-                echo "⚠️ Retrying in same region (attempt $ATTEMPT of $MAX_ATTEMPTS)..."
-                sleep 10
-              fi
-            done
+            # Run command and capture output (|| true prevents script exit on error)
+            OUTPUT=$(az sql server create \
+              --name ${{ env.SQL_SERVER_NAME }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location $REGION \
+              --admin-user sqladmin \
+              --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1 || true)
             
-            # Move to next region if not successful
-            if [ "$SUCCESSFUL" = true ]; then
-              echo "✓ Successfully created SQL Server in $USED_REGION"
+            # Log output for debugging
+            echo "$OUTPUT"
+            
+            # Check if server was actually created by trying to show it
+            if az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+              echo "✓ SQL Server created successfully in $REGION"
+              SUCCESSFUL=true
+              USED_REGION=$REGION
               break
             fi
             
-            echo "⚠️ Failed to create SQL Server in $REGION after $MAX_ATTEMPTS attempts"
+            # Log error output for debugging
+            echo "⚠️ Failed to create SQL Server in $REGION"
+            echo "Error output:"
+            echo "$OUTPUT" | tail -5
+            
+            # Check if error is due to region not accepting provisioning
+            if echo "$OUTPUT" | grep -qi "RegionDoesNotAllowProvisioning\|region.*unavailable\|capacity.*exhausted\|no capacity\|not available in"; then
+              echo "⚠️ Region $REGION is not accepting SQL Server creation (capacity/resource issue)"
+            fi
+            
             echo "Trying next region..."
             echo ""
           done
