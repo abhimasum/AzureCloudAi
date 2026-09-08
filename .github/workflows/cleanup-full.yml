@@ -1,0 +1,237 @@
+name: 🧹 Full Cleanup - Delete All Resources Properly
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_delete:
+        description: '⚠️ Type "DELETE-ALL" to confirm full cleanup'
+        required: true
+        type: string
+        default: "DELETE-ALL"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AZURE_RESOURCE_GROUP: azure-ai-agents
+  SQL_SERVER_NAME: ai-agents-sql-abhimasum3
+  OPENAI_NAME: ai-agents-openai
+  SEARCH_NAME: ai-agents-search-abhimasum
+  STORAGE_NAME: aiagentsstorageabhimasum
+  ACR_NAME: aiagentsacr
+  CONTAINER_ENV: ai-agents-env
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Verify Confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm_delete }}" != "DELETE-ALL" ]; then
+            echo "❌ Cleanup cancelled - confirmation mismatch"
+            exit 1
+          fi
+          echo "✓ Confirmation verified"
+
+      - name: List Current Resources
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Resources in resource group: ${{ env.AZURE_RESOURCE_GROUP }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "SQL Servers:"
+          az sql server list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --output table 2>/dev/null || echo "  None"
+          echo ""
+          echo "OpenAI Accounts:"
+          az cognitiveservices account list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --output table 2>/dev/null || echo "  None"
+          echo ""
+          echo "AI Search Services:"
+          az search service list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --output table 2>/dev/null || echo "  None"
+          echo ""
+          echo "Storage Accounts:"
+          az storage account list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --output table 2>/dev/null || echo "  None"
+          echo ""
+          echo "Container Apps:"
+          az containerapp list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --output table 2>/dev/null || echo "  None"
+          echo ""
+          echo "Container Registry:"
+          az acr list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --output table 2>/dev/null || echo "  None"
+          echo ""
+
+      - name: Delete SQL Server
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🗄️ Deleting SQL Server: ${{ env.SQL_SERVER_NAME }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          # Delete SQL databases first
+          echo "Deleting SQL databases..."
+          az sql db list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --server ${{ env.SQL_SERVER_NAME }} --query "[].name" -o tsv | while read DB; do
+            echo "  Deleting database: $DB"
+            az sql db delete --name $DB --server ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --yes 2>/dev/null || echo "  Database $DB already deleted"
+          done
+          
+          # Delete firewall rules
+          echo "Deleting firewall rules..."
+          az sql server firewall-rule list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --server ${{ env.SQL_SERVER_NAME }} --query "[].name" -o tsv | while read RULE; do
+            echo "  Deleting firewall rule: $RULE"
+            az sql server firewall-rule delete --name $RULE --server ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --yes 2>/dev/null || echo "  Rule $RULE already deleted"
+          done
+          
+          # Delete SQL server
+          echo "Deleting SQL server..."
+          if az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            az sql server delete --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --yes
+            echo "✓ SQL Server deleted"
+          else
+            echo "ℹ️ SQL Server not found (already deleted)"
+          fi
+          sleep 5
+
+      - name: Delete Azure OpenAI
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🤖 Deleting Azure OpenAI: ${{ env.OPENAI_NAME }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          if az cognitiveservices account show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            az cognitiveservices account delete --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --yes
+            echo "✓ Azure OpenAI deleted"
+          else
+            echo "ℹ️ Azure OpenAI not found (already deleted)"
+          fi
+          sleep 5
+
+      - name: Delete AI Search Service
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 Deleting AI Search: ${{ env.SEARCH_NAME }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          if az search service show --name ${{ env.SEARCH_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            az search service delete --name ${{ env.SEARCH_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --yes
+            echo "✓ AI Search deleted"
+          else
+            echo "ℹ️ AI Search not found (already deleted)"
+          fi
+          sleep 5
+
+      - name: Delete Storage Account
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "💾 Deleting Storage Account: ${{ env.STORAGE_NAME }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          if az storage account show --name ${{ env.STORAGE_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            az storage account delete --name ${{ env.STORAGE_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --yes
+            echo "✓ Storage Account deleted"
+          else
+            echo "ℹ️ Storage Account not found (already deleted)"
+          fi
+          sleep 5
+
+      - name: Delete Container Registry
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🐳 Deleting Container Registry: ${{ env.ACR_NAME }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          if az acr show --name ${{ env.ACR_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            az acr delete --name ${{ env.ACR_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --yes
+            echo "✓ Container Registry deleted"
+          else
+            echo "ℹ️ Container Registry not found (already deleted)"
+          fi
+          sleep 5
+
+      - name: Delete Container Apps Environment
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📦 Deleting Container Apps Environment: ${{ env.CONTAINER_ENV }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          if az appenv show --name ${{ env.CONTAINER_ENV }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            az appenv delete --name ${{ env.CONTAINER_ENV }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --yes 2>/dev/null || echo "  Container Apps Environment deletion initiated"
+            echo "✓ Container Apps Environment deleted"
+          else
+            echo "ℹ️ Container Apps Environment not found (already deleted)"
+          fi
+          sleep 5
+
+      - name: Delete Container Apps
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚀 Deleting Container Apps"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          for APP in orchestrator retriever ingestion; do
+            if az containerapp show --name $APP --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+              echo "  Deleting $APP..."
+              az containerapp delete --name $APP --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --yes 2>/dev/null || echo "  $APP already deleted"
+              echo "  ✓ $APP deleted"
+            else
+              echo "  ℹ️ $APP not found (already deleted)"
+            fi
+          done
+          sleep 5
+
+      - name: Purge Soft-Deleted Resources
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🧹 Purging Soft-Deleted Resources"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          # Purge soft-deleted SQL servers
+          echo "Purging soft-deleted SQL servers..."
+          az sql server list-deleted --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o json 2>/dev/null | jq -r '.[] | .id' | while read ID; do
+            echo "  Purging: $ID"
+            az sql server purge --id $ID --location northeurope 2>/dev/null || echo "  Purge initiated for $ID"
+          done
+          
+          # Purge soft-deleted OpenAI accounts
+          echo "Purging soft-deleted OpenAI accounts..."
+          az cognitiveservices account list-deleted --location northeurope -o json 2>/dev/null | jq -r '.[] | select(.resourceGroup == "${{ env.AZURE_RESOURCE_GROUP }}") | .id' | while read ID; do
+            echo "  Purging: $ID"
+            az cognitiveservices account purge --location northeurope --id $ID 2>/dev/null || echo "  Purge initiated for $ID"
+          done
+          
+          echo "✓ Soft-deleted resources purged"
+          sleep 10
+
+      - name: Delete Resource Group
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🗑️ Deleting Resource Group: ${{ env.AZURE_RESOURCE_GROUP }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          if az group show --name ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            az group delete \
+              --name ${{ env.AZURE_RESOURCE_GROUP }} \
+              --yes \
+              --no-wait
+            echo "✓ Resource group deletion initiated"
+            echo "  Monitor in Azure Portal for completion"
+          else
+            echo "ℹ️ Resource group not found (already deleted)"
+          fi
+
+      - name: Cleanup Complete
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ CLEANUP COMPLETE"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "All resources have been deleted individually."
+          echo "Resource group deletion has been initiated."
+          echo ""
+          echo "You can now create new resources with the same names!"
+          echo ""
