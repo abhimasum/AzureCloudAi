@@ -166,55 +166,27 @@ jobs:
             exit 0
           fi
           
-          echo "Creating SQL Server ${{ env.SQL_SERVER_NAME }}..."
-          echo "Trying regions: ${{ env.REGIONS }}"
-          echo ""
+          echo "Creating SQL Server ${{ env.SQL_SERVER_NAME }} in ${{ env.AZURE_LOCATION }}..."
           
-          # Array of regions to try
-          REGIONS=(${{ env.REGIONS }})
-          SUCCESSFUL=false
-          USED_REGION=""
+          # Run command and capture output (|| true prevents script exit on error)
+          OUTPUT=$(az sql server create \
+            --name ${{ env.SQL_SERVER_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --location ${{ env.AZURE_LOCATION }} \
+            --admin-user sqladmin \
+            --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1 || true)
           
-          for REGION in "${REGIONS[@]}"; do
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "Attempting provisioning in region: $REGION"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            
-            # Run command and capture output (|| true prevents script exit on error)
-            OUTPUT=$(az sql server create \
-              --name ${{ env.SQL_SERVER_NAME }} \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --location $REGION \
-              --admin-user sqladmin \
-              --admin-password "${{ secrets.AZURE_SQL_PASSWORD }}" 2>&1 || true)
-            
-            # Log output for debugging
-            echo "$OUTPUT"
-            
-            # Check if server was actually created by trying to show it
-            if az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
-              echo "✓ SQL Server created successfully in $REGION"
-              SUCCESSFUL=true
-              USED_REGION=$REGION
-              break
-            fi
-            
-            # Log error output for debugging
-            echo "⚠️ Failed to create SQL Server in $REGION"
+          # Log output for debugging
+          echo "$OUTPUT"
+          
+          # Check if server was actually created by trying to show it
+          if az sql server show --name ${{ env.SQL_SERVER_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ SQL Server created successfully in ${{ env.AZURE_LOCATION }}"
+            USED_REGION="${{ env.AZURE_LOCATION }}"
+          else
+            echo "❌ Failed to create SQL Server in ${{ env.AZURE_LOCATION }}"
             echo "Error output:"
             echo "$OUTPUT" | tail -5
-            
-            # Check if error is due to region not accepting provisioning
-            if echo "$OUTPUT" | grep -qi "RegionDoesNotAllowProvisioning\|region.*unavailable\|capacity.*exhausted\|no capacity\|not available in"; then
-              echo "⚠️ Region $REGION is not accepting SQL Server creation (capacity/resource issue)"
-            fi
-            
-            echo "Trying next region..."
-            echo ""
-          done
-          
-          if [ "$SUCCESSFUL" = false ]; then
-            echo "❌ Failed to create SQL Server in any region"
             exit 1
           fi
           
