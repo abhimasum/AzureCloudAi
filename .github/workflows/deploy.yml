@@ -24,7 +24,7 @@ env:
   AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
   AZURE_RESOURCE_GROUP: azure-ai-agents
   AZURE_LOCATION: northeurope
-  REGIONS: "northeurope westeurope uksouth centralindia southindia eastus eastus2 westus canadacentral"
+  REGIONS: "northeurope westeurope uksouth centralindia southindia westindia eastus eastus2 westus canadacentral"
   ACR_NAME: aiagentsacr
   CONTAINER_ENV: ai-agents-env
   SQL_SERVER_NAME: ai-agents-sql-abhimasum2
