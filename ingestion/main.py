@@ -1,8 +1,7 @@
-"""HTTP wrapper around ingest.py so Cloud Scheduler can trigger re-ingestion.
+"""HTTP wrapper around ingest.py to trigger document ingestion into Azure AI Search.
 
-Cloud Scheduler should call this with a POST request using an OIDC identity token
-(see infra/setup_gcp.sh and .github/workflows/deploy.yml) — do not deploy this service
-with --allow-unauthenticated.
+Azure Container Apps Job or Timer-triggered Function should call this with a POST request.
+For testing, can be called manually via curl or browser.
 """
 
 import logging

@@ -35,15 +35,15 @@ if (Test-Path .env.local) {
     exit 1
 }
 
-# Check if user is authenticated with GCP
-Write-Host "Checking GCP authentication..." -ForegroundColor Yellow
-$authCheck = gcloud auth application-default print-access-token 2>&1
+# Check if Azure CLI is configured
+Write-Host "Checking Azure configuration..." -ForegroundColor Yellow
+$accountCheck = az account show 2>&1
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: Not authenticated with GCP!" -ForegroundColor Red
-    Write-Host "Run: gcloud auth application-default login" -ForegroundColor Yellow
+    Write-Host "ERROR: Not logged in to Azure!" -ForegroundColor Red
+    Write-Host "Run: az login" -ForegroundColor Yellow
     exit 1
 }
-Write-Host "✓ GCP authentication verified" -ForegroundColor Green
+Write-Host "✓ Azure authentication verified" -ForegroundColor Green
 Write-Host ""
 
 # Check if SQL database exists
@@ -66,7 +66,7 @@ Write-Host "Select testing mode:" -ForegroundColor Cyan
 Write-Host "1. Test Retriever Agent only (port 8081)"
 Write-Host "2. Test Orchestrator Agent only (port 8080) - requires retriever deployed or running"
 Write-Host "3. Test Both Agents (retriever on 8081, orchestrator on 8080)"
-Write-Host "4. Deploy to GCP via GitHub Actions"
+Write-Host "4. Deploy to Azure via GitHub Actions"
 Write-Host ""
 $choice = Read-Host "Enter choice (1-4)"
 
@@ -110,8 +110,6 @@ switch ($choice) {
         $retrieverJob = Start-Job -ScriptBlock {
             param($projectRoot)
             Set-Location "$projectRoot/agents/retriever_agent"
-            $env:GOOGLE_CLOUD_PROJECT = $using:env:GOOGLE_CLOUD_PROJECT
-            $env:RAG_CORPUS = $using:env:RAG_CORPUS
             $env:PORT = "8081"
             python -m uvicorn a2a_app:a2a_app --host 0.0.0.0 --port 8081
         } -ArgumentList (Get-Location).Path
@@ -152,7 +150,7 @@ switch ($choice) {
     
     "4" {
         Write-Host ""
-        Write-Host "=== Deploying to GCP ===" -ForegroundColor Cyan
+        Write-Host "=== Deploying to Azure ==" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "This will trigger the GitHub Actions workflow to deploy all services." -ForegroundColor Yellow
         Write-Host ""
@@ -183,7 +181,7 @@ switch ($choice) {
         Write-Host "✓ Deployment triggered!" -ForegroundColor Green
         Write-Host ""
         Write-Host "Monitor deployment at:" -ForegroundColor Cyan
-        Write-Host "https://github.com/abhimasum/GoogleCloudAi/actions" -ForegroundColor Gray
+        Write-Host "https://github.com/abhimasum/AzureCloudAi/actions" -ForegroundColor Gray
         Write-Host ""
         Write-Host "Or run: gh run watch" -ForegroundColor Gray
     }

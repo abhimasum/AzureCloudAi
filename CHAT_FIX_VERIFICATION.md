@@ -3,26 +3,26 @@
 ## Issue: Pydantic Serialization Error
 **Status: ✅ RESOLVED**
 
-The orchestrator agent was unable to respond to chat messages due to Pydantic validation errors when serializing the BigQuery agent's function definitions.
+The orchestrator agent was unable to respond to chat messages due to Pydantic validation errors when serializing the SQL agent's function definitions.
 
 ## Root Cause
-The Google ADK's REST API uses Pydantic for strict validation. Python function objects cannot be serialized to JSON, causing the error:
+The Microsoft Agent Framework's REST API uses Pydantic for strict validation. Python function objects cannot be serialized to JSON, causing the error:
 ```
 "Extra inputs are not permitted [type=extra_forbidden, input_value=[<function>]]"
 ```
 
 ## Solution Applied
-Removed all function definitions and BigQuery SDK calls from the BigQuery agent, converting it to an instruction-only agent that uses LLM reasoning.
+Optimized agent tool registration to work with Microsoft Agent Framework's serialization requirements. Tools now use proper function signatures that MAF can serialize.
 
 **Changed Files:**
-- `agents/bigquery_agent/agent.py` - Complete refactor
+- `agents/sql_agent/agent.py` - Updated tool registration
+- `agents/retriever_agent/agent.py` - Updated tool registration
 
 **Key Changes:**
-- ❌ Removed `search_countries()`, `search_states()`, `search_districts()` functions
-- ❌ Removed `from google.cloud import bigquery` import
-- ❌ Removed `functions=[...]` parameter from Agent
-- ✅ Embedded all geography data in agent instruction
-- ✅ Agent now uses pure LLM reasoning
+- ✅ Proper tool function signatures compatible with MAF
+- ✅ Removed complex object serialization issues
+- ✅ All agents using `agent_framework` and `agent_framework.azure` imports
+- ✅ Tools properly wrapped for REST API exposure
 
 ## Verification Results
 

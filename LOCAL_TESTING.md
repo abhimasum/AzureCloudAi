@@ -131,17 +131,17 @@ Expected: Direct response without calling any agent
 ### Agent Deployment Strategy
 
 - **Retriever Agent**: Separate A2A service (independent scaling)
-  - Deployed as separate Cloud Run service
+  - Deployed as separate Azure Container App
   - Communicates via Agent-to-Agent protocol
   - Port 8081 locally
 
-- **BigQuery Agent**: Local sub-agent (cost-efficient)
+- **SQL Agent**: Local sub-agent (cost-efficient)
   - Runs inside orchestrator process
   - No separate deployment needed
   - Imported as Python module
 
 - **Orchestrator Agent**: Main entry point
-  - Includes BigQuery agent locally
+  - Includes SQL agent locally
   - Calls retriever via A2A
   - Port 8080 locally
 
@@ -149,9 +149,14 @@ Expected: Direct response without calling any agent
 
 | Variable | Used By | Description |
 |----------|---------|-------------|
-| `GOOGLE_CLOUD_PROJECT` | All agents | GCP project ID |
-| `GOOGLE_CLOUD_LOCATION` | Setup script | GCP region |
-| `RAG_CORPUS` | Retriever | Full RAG corpus resource name |
+| `AZURE_SQL_SERVER` | SQL Agent | Azure SQL server (e.g., myserver.database.windows.net) |
+| `AZURE_SQL_USER` | SQL Agent | SQL authentication username |
+| `AZURE_SQL_PASSWORD` | SQL Agent | SQL authentication password |
+| `AZURE_SEARCH_ENDPOINT` | Retriever | Azure AI Search endpoint URL |
+| `AZURE_SEARCH_KEY` | Retriever | Azure AI Search API key |
+| `AZURE_OPENAI_ENDPOINT` | All agents | Azure OpenAI endpoint |
+| `AZURE_OPENAI_API_KEY` | All agents | Azure OpenAI API key |
+| `AZURE_OPENAI_DEPLOYMENT` | All agents | GPT-4o deployment name (default: gpt-4o) |
 | `RETRIEVER_AGENT_URL` | Orchestrator | URL to retriever A2A service |
 
 ## Deployment

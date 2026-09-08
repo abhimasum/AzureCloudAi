@@ -1,79 +1,233 @@
-"""Creates/updates a Vertex AI RAG Engine corpus from files stored in Cloud Storage.
+"""Ingests documents into Azure AI Search index using Azure OpenAI embeddings.
 
 Usage (local):
     python ingest.py
 
 Required env vars:
-    GOOGLE_CLOUD_PROJECT
-    RAG_GCS_SOURCE          e.g. gs://my-bucket/docs/*
+    AZURE_STORAGE_ACCOUNT_NAME     e.g. aiagentsstorageabhimasum
+    AZURE_STORAGE_ACCOUNT_KEY      Storage account key
+    AZURE_STORAGE_CONTAINER        e.g. documents
 
-Optional env vars:
-    GOOGLE_CLOUD_LOCATION       default: us-central1
-    RAG_CORPUS_DISPLAY_NAME     default: adk-sample-knowledge-base
-    RAG_CORPUS_ID               if set, re-use this existing corpus instead of creating
-                                 a new one (id only, e.g. "4611686018427387904")
+Azure AI Search env vars:
+    AZURE_SEARCH_ENDPOINT          e.g. https://mysearch.search.windows.net
+    AZURE_SEARCH_KEY               Search service API key
+    AZURE_SEARCH_INDEX             e.g. documents (created if not exists)
+
+Azure OpenAI env vars:
+    AZURE_OPENAI_ENDPOINT          e.g. https://myresource.openai.azure.com
+    AZURE_OPENAI_API_KEY           OpenAI API key
+    AZURE_OPENAI_EMBEDDING_DEPLOYMENT   e.g. text-embedding-3-small
 """
 
 import logging
 import os
+from pathlib import Path
 
-import vertexai
-from vertexai.preview import rag
+from azure.storage.blob import BlobServiceClient
+from azure.search.documents import SearchClient
+from azure.search.documents.indexes import SearchIndexClient
+from azure.search.documents.indexes.models import (
+    SearchIndex,
+    SearchField,
+    SearchFieldDataType,
+    SimpleField,
+    SearchableField,
+    VectorSearch,
+    HnswAlgorithmConfiguration,
+    VectorSearchProfile,
+    SemanticConfiguration,
+    SemanticField,
+    SemanticPrioritizedFields,
+)
+from azure.core.credentials import AzureKeyCredential
+from openai import AzureOpenAI
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-PROJECT_ID = os.environ["GOOGLE_CLOUD_PROJECT"]
-LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
-CORPUS_DISPLAY_NAME = os.environ.get(
-    "RAG_CORPUS_DISPLAY_NAME", "adk-sample-knowledge-base"
-)
-RAG_CORPUS_ID = os.environ.get("RAG_CORPUS_ID")
-# Note: RAG_GCS_SOURCE should be a bucket path, not a wildcard pattern
-# E.g., "gs://my-bucket" or "gs://my-bucket/docs/"
-# The SDK will discover all files recursively
-GCS_SOURCE = os.environ["RAG_GCS_SOURCE"]
+# Azure Storage
+STORAGE_ACCOUNT = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME", "aiagentsstorageabhimasum")
+STORAGE_KEY = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
+STORAGE_CONTAINER = os.environ.get("AZURE_STORAGE_CONTAINER", "documents")
+
+# Azure AI Search
+SEARCH_ENDPOINT = os.environ.get("AZURE_SEARCH_ENDPOINT")
+SEARCH_KEY = os.environ.get("AZURE_SEARCH_KEY")
+SEARCH_INDEX = os.environ.get("AZURE_SEARCH_INDEX", "documents")
+
+# Azure OpenAI (for embeddings)
+OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
+OPENAI_KEY = os.environ.get("AZURE_OPENAI_API_KEY")
+OPENAI_EMBEDDING_DEPLOYMENT = os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small")
 
 
-def _get_or_create_corpus() -> rag.RagCorpus:
-    if RAG_CORPUS_ID:
-        corpus_name = (
-            f"projects/{PROJECT_ID}/locations/{LOCATION}/ragCorpora/{RAG_CORPUS_ID}"
-        )
-        logger.info("Re-using existing RAG corpus: %s", corpus_name)
-        return rag.get_corpus(name=corpus_name)
+def _create_or_get_index():
+    """Create or verify Azure AI Search index exists."""
+    if not SEARCH_ENDPOINT or not SEARCH_KEY:
+        logger.warning("Azure AI Search not configured - skipping index creation")
+        return
 
-    logger.info("Creating a new RAG corpus: %s", CORPUS_DISPLAY_NAME)
-    embedding_model_config = rag.EmbeddingModelConfig(
-        publisher_model="publishers/google/models/text-embedding-005"
+    index_client = SearchIndexClient(endpoint=SEARCH_ENDPOINT, credential=AzureKeyCredential(SEARCH_KEY))
+
+    # Define the search index with vector search capabilities
+    fields = [
+        SimpleField(name="id", type=SearchFieldDataType.String, key=True),
+        SearchableField(name="title", type=SearchFieldDataType.String),
+        SearchableField(name="content", type=SearchFieldDataType.String),
+        SimpleField(name="chunk_id", type=SearchFieldDataType.String),
+        SearchField(
+            name="embedding",
+            type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
+            searchable=True,
+            vector_search_dimensions=1536,
+            vector_search_profile_name="myHnswProfile",
+        ),
+    ]
+
+    vector_search = VectorSearch(
+        algorithms=[HnswAlgorithmConfiguration(name="myHnsw")],
+        profiles=[VectorSearchProfile(name="myHnswProfile", algorithm_configuration_name="myHnsw")],
     )
-    # Use Serverless mode for RAG Engine (required for new projects in us-central1)
-    # Serverless mode is the default; just ensure we're not specifying Spanner mode
-    return rag.create_corpus(
-        display_name=CORPUS_DISPLAY_NAME,
-        embedding_model_config=embedding_model_config,
+
+    semantic_config = SemanticConfiguration(
+        name="default",
+        prioritized_fields=SemanticPrioritizedFields(
+            content_fields=[SemanticField(field_name="content")],
+            keywords_fields=[SemanticField(field_name="title")],
+        ),
     )
+
+    index = SearchIndex(
+        name=SEARCH_INDEX,
+        fields=fields,
+        vector_search=vector_search,
+        semantic_search=semantic_config,
+    )
+
+    try:
+        result = index_client.create_or_update_index(index)
+        logger.info(f"Index '{result.name}' created or updated successfully")
+    except Exception as e:
+        logger.error(f"Failed to create index: {e}")
+        raise
+
+
+def _get_documents_from_storage() -> list[dict]:
+    """Read documents from Azure Storage."""
+    if not STORAGE_ACCOUNT or not STORAGE_KEY:
+        logger.warning("Azure Storage not configured - using sample documents from data/")
+        docs = []
+        data_path = Path(__file__).parent.parent / "data" / "sample_docs"
+        if data_path.exists():
+            for file in data_path.glob("*.md"):
+                with open(file, "r", encoding="utf-8") as f:
+                    docs.append({
+                        "title": file.stem,
+                        "content": f.read(),
+                        "source": file.name,
+                    })
+        return docs
+
+    blob_client = BlobServiceClient(
+        account_url=f"https://{STORAGE_ACCOUNT}.blob.core.windows.net",
+        credential=STORAGE_KEY
+    )
+    container_client = blob_client.get_container_client(STORAGE_CONTAINER)
+
+    docs = []
+    for blob in container_client.list_blobs():
+        blob_download = container_client.download_blob(blob.name)
+        content = blob_download.readall().decode("utf-8")
+        docs.append({
+            "title": blob.name.replace(".md", "").replace("_", " "),
+            "content": content,
+            "source": blob.name,
+        })
+    return docs
+
+
+def _generate_embeddings(text: str) -> list[float]:
+    """Generate embeddings using Azure OpenAI."""
+    if not OPENAI_ENDPOINT or not OPENAI_KEY:
+        logger.warning("Azure OpenAI not configured - embeddings will be empty")
+        return [0.0] * 1536
+
+    client = AzureOpenAI(
+        api_key=OPENAI_KEY,
+        api_version="2024-02-15-preview",
+        azure_endpoint=OPENAI_ENDPOINT
+    )
+
+    response = client.embeddings.create(
+        input=text,
+        model=OPENAI_EMBEDDING_DEPLOYMENT
+    )
+    return response.data[0].embedding
 
 
 def run_ingestion() -> str:
-    """Ensures the corpus exists and imports the latest files from GCS into it."""
-    vertexai.init(project=PROJECT_ID, location=LOCATION)
+    """Ingests documents into Azure AI Search."""
+    logger.info("Starting document ingestion into Azure AI Search")
 
-    corpus = _get_or_create_corpus()
+    # Create index
+    _create_or_get_index()
 
-    logger.info("Importing files from %s into %s", GCS_SOURCE, corpus.name)
-    rag.import_files(
-        corpus_name=corpus.name,
-        paths=[GCS_SOURCE],
-        transformation_config=rag.TransformationConfig(
-            chunking_config=rag.ChunkingConfig(chunk_size=512, chunk_overlap=100)
-        ),
-        max_embedding_requests_per_min=1000,
+    # Get documents
+    documents = _get_documents_from_storage()
+    logger.info(f"Found {len(documents)} documents to index")
+
+    if not documents:
+        logger.warning("No documents found to ingest")
+        return SEARCH_INDEX
+
+    # Upload to search index
+    if not SEARCH_ENDPOINT or not SEARCH_KEY:
+        logger.warning("Azure AI Search not configured - skipping upload")
+        return SEARCH_INDEX
+
+    search_client = SearchClient(
+        endpoint=SEARCH_ENDPOINT,
+        index_name=SEARCH_INDEX,
+        credential=AzureKeyCredential(SEARCH_KEY)
     )
 
-    logger.info("Ingestion complete. RAG_CORPUS resource name: %s", corpus.name)
-    return corpus.name
+    # Chunk documents and add embeddings
+    docs_to_upload = []
+    chunk_size = 1000
+    chunk_overlap = 100
+
+    for doc in documents:
+        content = doc["content"]
+        title = doc["title"]
+
+        # Simple chunking
+        for i in range(0, len(content), chunk_size - chunk_overlap):
+            chunk = content[i : i + chunk_size]
+            chunk_id = f"{title}-chunk-{i // (chunk_size - chunk_overlap)}"
+
+            embedding = _generate_embeddings(chunk)
+
+            docs_to_upload.append({
+                "id": chunk_id.replace(" ", "-"),
+                "title": title,
+                "content": chunk,
+                "chunk_id": chunk_id,
+                "embedding": embedding,
+            })
+
+    # Upload in batches
+    batch_size = 10
+    for i in range(0, len(docs_to_upload), batch_size):
+        batch = docs_to_upload[i : i + batch_size]
+        try:
+            result = search_client.upload_documents(batch)
+            logger.info(f"Uploaded {len(result)} documents (batch {i // batch_size + 1})")
+        except Exception as e:
+            logger.error(f"Failed to upload batch: {e}")
+
+    logger.info(f"Ingestion complete. Total documents indexed: {len(docs_to_upload)} chunks")
+    return SEARCH_INDEX
 
 
 if __name__ == "__main__":
-    print(f"Ingestion complete. RAG_CORPUS resource name: {run_ingestion()}")
+    print(f"Ingestion complete. Search index: {run_ingestion()}")

@@ -11,9 +11,9 @@ venv/
 service-account*.json
 *.key.json
 
-# ADK local state
+# MAF local state
 *.db
-.adk/
+.maf/
 
 # OS / editor
 .DS_Store
