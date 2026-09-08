@@ -23,7 +23,7 @@ permissions:
 env:
   AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
   AZURE_RESOURCE_GROUP: azure-ai-agents
-  AZURE_LOCATION: westindia
+  AZURE_LOCATION: westeurope
   REGIONS: "northeurope westeurope uksouth centralindia southindia westindia eastus eastus2 westus canadacentral"
   ACR_NAME: aiagentsacr
   CONTAINER_ENV: ai-agents-env
