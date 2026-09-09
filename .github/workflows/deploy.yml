@@ -223,10 +223,10 @@ jobs:
           
           # Create database using Azure CLI
           echo "Creating database ${{ env.SQL_DATABASE_NAME }}..."
-          az cosmosdb database create \
+          az cosmosdb sql database create \
             --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --db-name ${{ env.SQL_DATABASE_NAME }} 2>&1
+            --name ${{ env.SQL_DATABASE_NAME }} 2>&1
           
           if [ $? -eq 0 ]; then
             echo "✓ Database created successfully"
@@ -236,7 +236,7 @@ jobs:
           
           # Create containers using Azure CLI
           echo "Creating 'countries' container..."
-          az cosmosdb container create \
+          az cosmosdb sql container create \
             --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --database-name ${{ env.SQL_DATABASE_NAME }} \
@@ -244,7 +244,7 @@ jobs:
             --partition-key-path /id 2>&1
           
           echo "Creating 'states' container..."
-          az cosmosdb container create \
+          az cosmosdb sql container create \
             --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --database-name ${{ env.SQL_DATABASE_NAME }} \
