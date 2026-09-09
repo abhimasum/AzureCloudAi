@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agents Chat - Geography Expert</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 10px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 800px;
+            height: 90vh;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .chat-box {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .message {
+            display: flex;
+            gap: 10px;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message.user {
+            justify-content: flex-end;
+        }
+
+        .message.bot {
+            justify-content: flex-start;
+        }
+
+        .message-content {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            word-wrap: break-word;
+        }
+
+        .message.user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.bot .message-content {
+            background: #f0f0f0;
+            color: #333;
+            border-bottom-left-radius: 4px;
+        }
+
+        .message.error .message-content {
+            background: #fee;
+            color: #c33;
+            border-left: 3px solid #c33;
+        }
+
+        .timestamp {
+            font-size: 12px;
+            opacity: 0.6;
+            margin-top: 5px;
+        }
+
+        .typing-indicator {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+            padding: 10px;
+        }
+
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #667eea;
+            animation: bounce 1.4s infinite;
+        }
+
+        .typing-dot:nth-child(1) { animation-delay: 0s; }
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes bounce {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-10px); }
+        }
+
+        .input-area {
+            padding: 20px;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 10px;
+        }
+
+        .input-wrapper {
+            flex: 1;
+            display: flex;
+            gap: 10px;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 12px 16px;
+            border: 1px solid #e0e0e0;
+            border-radius: 24px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        button {
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 24px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .clear-btn {
+            background: #f0f0f0;
+            color: #333;
+            padding: 12px 16px;
+        }
+
+        .clear-btn:hover {
+            background: #e0e0e0;
+        }
+
+        .empty-state {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: #999;
+            text-align: center;
+            gap: 15px;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+        }
+
+        .example-queries {
+            margin-top: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .example-query {
+            padding: 8px 12px;
+            background: #f0f0f0;
+            border: 1px solid #e0e0e0;
+            border-radius: 20px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .example-query:hover {
+            background: #e0e0e0;
+            border-color: #667eea;
+        }
+
+        .context-info {
+            font-size: 12px;
+            opacity: 0.7;
+            padding: 0 16px;
+            margin-top: auto;
+        }
+
+        @media (max-width: 600px) {
+            .message-content {
+                max-width: 85%;
+            }
+
+            .header h1 {
+                font-size: 18px;
+            }
+
+            .example-queries {
+                flex-direction: column;
+            }
+
+            .example-query {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🗺️ Geography Expert Chat</h1>
+            <p>Ask questions about India - states, districts, cultures, and more!</p>
+        </div>
+
+        <div class="chat-box" id="chatBox">
+            <div class="empty-state">
+                <div class="empty-state-icon">💬</div>
+                <div>
+                    <h3>Welcome!</h3>
+                    <p>Start asking questions about Indian geography</p>
+                </div>
+                <div class="example-queries">
+                    <div class="example-query" onclick="sendQuery('List all Indian states')">List states</div>
+                    <div class="example-query" onclick="sendQuery('What is the capital of India?')">Capital</div>
+                    <div class="example-query" onclick="sendQuery('Tell me about Maharashtra')">Maharashtra</div>
+                    <div class="example-query" onclick="sendQuery('What are the major districts in Tamil Nadu?')">Districts</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="input-area">
+            <div class="input-wrapper">
+                <input 
+                    type="text" 
+                    id="queryInput" 
+                    placeholder="Ask me about Indian geography..." 
+                    onkeypress="handleKeyPress(event)"
+                />
+                <button onclick="sendQuery()" id="sendBtn">Send</button>
+            </div>
+            <button class="clear-btn" onclick="clearChat()" title="Clear conversation history">Clear</button>
+        </div>
+    </div>
+
+    <script>
+        const chatBox = document.getElementById('chatBox');
+        const queryInput = document.getElementById('queryInput');
+        const sendBtn = document.getElementById('sendBtn');
+        let isLoading = false;
+        let conversationHistory = [];
+
+        async function sendQuery(query = null) {
+            if (isLoading) return;
+
+            const userQuery = query || queryInput.value.trim();
+            if (!userQuery) return;
+
+            // Clear input
+            queryInput.value = '';
+
+            // Remove empty state if present
+            const emptyState = chatBox.querySelector('.empty-state');
+            if (emptyState) emptyState.remove();
+
+            // Add user message to chat
+            addMessage(userQuery, 'user');
+
+            // Add to history
+            conversationHistory.push({ role: 'user', content: userQuery });
+
+            // Show typing indicator
+            showTypingIndicator();
+
+            try {
+                isLoading = true;
+                sendBtn.disabled = true;
+                queryInput.disabled = true;
+
+                const response = await fetch('/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        query: userQuery,
+                        context: conversationHistory
+                    })
+                });
+
+                const data = await response.json();
+                removeTypingIndicator();
+
+                if (response.ok) {
+                    const botResponse = data.response;
+                    addMessage(botResponse, 'bot');
+                    conversationHistory.push({ role: 'bot', content: botResponse });
+                } else {
+                    addMessage('Error: ' + (data.error || 'Unknown error'), 'error');
+                }
+            } catch (error) {
+                removeTypingIndicator();
+                addMessage('Connection error: ' + error.message, 'error');
+            } finally {
+                isLoading = false;
+                sendBtn.disabled = false;
+                queryInput.disabled = false;
+                queryInput.focus();
+            }
+        }
+
+        function addMessage(text, sender) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${sender}`;
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = text;
+
+            messageDiv.appendChild(contentDiv);
+
+            const timeDiv = document.createElement('div');
+            timeDiv.className = 'timestamp';
+            timeDiv.textContent = new Date().toLocaleTimeString();
+            messageDiv.appendChild(timeDiv);
+
+            chatBox.appendChild(messageDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function showTypingIndicator() {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message bot';
+            messageDiv.id = 'typingIndicator';
+
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.innerHTML = '<div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>';
+
+            messageDiv.appendChild(contentDiv);
+            chatBox.appendChild(messageDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function removeTypingIndicator() {
+            const indicator = document.getElementById('typingIndicator');
+            if (indicator) indicator.remove();
+        }
+
+        function clearChat() {
+            if (conversationHistory.length === 0) return;
+            if (!confirm('Clear conversation history?')) return;
+
+            chatBox.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">💬</div>
+                    <div>
+                        <h3>Welcome!</h3>
+                        <p>Start asking questions about Indian geography</p>
+                    </div>
+                    <div class="example-queries">
+                        <div class="example-query" onclick="sendQuery('List all Indian states')">List states</div>
+                        <div class="example-query" onclick="sendQuery('What is the capital of India?')">Capital</div>
+                        <div class="example-query" onclick="sendQuery('Tell me about Maharashtra')">Maharashtra</div>
+                        <div class="example-query" onclick="sendQuery('What are the major districts in Tamil Nadu?')">Districts</div>
+                    </div>
+                </div>
+            `;
+            conversationHistory = [];
+            queryInput.value = '';
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter' && !isLoading) {
+                sendQuery();
+            }
+        }
+
+        // Focus on input when page loads
+        window.addEventListener('load', () => {
+            queryInput.focus();
+        });
+    </script>
+</body>
+</html>

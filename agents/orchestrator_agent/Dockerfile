@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y curl gnupg apt-transport-https \
 COPY orchestrator_agent/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy orchestrator agent code, plus sql_agent (imported as a sibling package)
+# Copy orchestrator agent code (includes static folder), plus sql_agent (imported as a sibling package)
 COPY orchestrator_agent/ .
 COPY sql_agent/ ./sql_agent/
 

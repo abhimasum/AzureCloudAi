@@ -2,9 +2,11 @@
 
 import os
 import logging
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -23,8 +25,14 @@ except Exception as e:
     _init_error = str(e)
 
 
+class Message(BaseModel):
+    role: str  # "user" or "bot"
+    content: str
+
+
 class RunRequest(BaseModel):
     query: str
+    context: list[Message] = []  # Conversation history for context
 
 
 @app.get("/health")
@@ -36,6 +44,11 @@ async def health():
 
 @app.get("/")
 async def root():
+    """Serve the chat UI"""
+    static_dir = Path(__file__).parent / "static"
+    index_file = static_dir / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
     return await health()
 
 
@@ -43,8 +56,24 @@ async def root():
 async def run(request: RunRequest):
     if root_agent is None:
         return {"response": f"Agent not initialized: {_init_error}"}
-    result = await root_agent.run(request.query)
-    return {"response": str(result)}
+    
+    try:
+        # Build context string from conversation history
+        context_str = ""
+        if request.context:
+            context_str = "Conversation history:\n"
+            for msg in request.context:
+                context_str += f"{msg.role}: {msg.content}\n"
+            context_str += "\nCurrent query: "
+        
+        # Combine context with current query
+        full_query = context_str + request.query if context_str else request.query
+        
+        result = await root_agent.run(full_query)
+        return {"response": str(result)}
+    except Exception as e:
+        logger.error(f"Error processing query: {e}", exc_info=True)
+        return {"response": f"Error: {str(e)}", "error": str(e)}
 
 
 if __name__ == "__main__":
