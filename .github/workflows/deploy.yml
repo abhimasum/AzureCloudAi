@@ -162,6 +162,12 @@ jobs:
           if az cosmosdb show --name ${{ env.COSMOSDB_ACCOUNT_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
             echo "✓ Cosmos DB account ${{ env.COSMOSDB_ACCOUNT_NAME }} exists"
             echo "cosmosdb_account=${{ env.COSMOSDB_ACCOUNT_NAME }}" >> $GITHUB_OUTPUT
+            # Get connection string even if account exists
+            COSMOSDB_CONNECTION_STRING=$(az cosmosdb keys list --name ${{ env.COSMOSDB_ACCOUNT_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --type connection-strings --output tsv 2>/dev/null | cut -f1)
+            if [ -n "$COSMOSDB_CONNECTION_STRING" ] && [ "$COSMOSDB_CONNECTION_STRING" != "null" ]; then
+              echo "cosmosdb_connection_string=$COSMOSDB_CONNECTION_STRING" >> $GITHUB_OUTPUT
+              echo "✓ Cosmos DB connection string retrieved"
+            fi
             exit 0
           fi
           
