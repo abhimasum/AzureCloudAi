@@ -552,7 +552,7 @@ jobs:
           echo "🗄️ Verifying Cosmos DB Database: ${{ env.SQL_DATABASE_NAME }}"
           
           # Verify database exists
-          az cosmosdb sql-database show \
+          az cosmosdb sql database show \
             --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --name ${{ env.SQL_DATABASE_NAME }} -o none 2>/dev/null || {
@@ -562,7 +562,7 @@ jobs:
           echo "✓ Database verified"
           
           # Verify countries container exists
-          az cosmosdb sql-container show \
+          az cosmosdb sql container show \
             --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --database-name ${{ env.SQL_DATABASE_NAME }} \
@@ -573,7 +573,7 @@ jobs:
           echo "✓ Countries container verified"
           
           # Verify states container exists
-          az cosmosdb sql-container show \
+          az cosmosdb sql container show \
             --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --database-name ${{ env.SQL_DATABASE_NAME }} \
