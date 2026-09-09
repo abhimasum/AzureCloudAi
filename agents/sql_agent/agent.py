@@ -7,7 +7,11 @@ retriever agent focus RAG searches. Returns INDEX information only.
 import os
 from azure.cosmos import CosmosClient, PartitionKey, exceptions
 from agent_framework import Agent
-from agent_framework.azure import AzureOpenAIChatClient
+from openai import OpenAI
+
+
+# Initialize OpenAI client with direct API
+_openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 
 # Initialize Cosmos DB connection
@@ -113,11 +117,7 @@ def list_all_states() -> str:
 
 
 root_agent = Agent(
-    client=AzureOpenAIChatClient(
-        endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT"),
-        api_key=os.environ.get("AZURE_OPENAI_API_KEY"),
-        deployment_name=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
-    ),
+    client=_openai_client,
     name="sql_agent",
     tools=[get_country_info, get_state_info, list_all_states],
     instructions="""

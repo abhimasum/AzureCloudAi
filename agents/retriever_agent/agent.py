@@ -5,9 +5,13 @@ This agent uses Azure AI Search for semantic vector search over ingested documen
 
 import os
 from agent_framework import Agent
-from agent_framework.azure import AzureOpenAIChatClient
+from openai import OpenAI
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
+
+
+# Initialize OpenAI client with direct API
+_openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 
 # Azure AI Search configuration
@@ -57,11 +61,7 @@ def search_knowledge_base(query: str, top_k: int = 10) -> str:
 
 
 root_agent = Agent(
-    client=AzureOpenAIChatClient(
-        endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT"),
-        api_key=os.environ.get("AZURE_OPENAI_API_KEY"),
-        deployment_name=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
-    ),
+    client=_openai_client,
     name="retriever_agent",
     tools=[search_knowledge_base],
     instructions="""

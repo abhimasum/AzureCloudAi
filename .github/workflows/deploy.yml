@@ -42,8 +42,6 @@ jobs:
       acr_login_server: ${{ steps.infra.outputs.acr_login_server }}
       cosmosdb_connection_string: ${{ steps.cosmosdb.outputs.cosmosdb_connection_string }}
       cosmosdb_account: ${{ steps.cosmosdb.outputs.cosmosdb_account }}
-      openai_endpoint: ${{ steps.openai.outputs.endpoint }}
-      openai_key: ${{ steps.openai.outputs.key }}
       search_endpoint: ${{ steps.search.outputs.endpoint }}
       search_key: ${{ steps.search.outputs.key }}
     steps:
@@ -292,136 +290,12 @@ jobs:
           
           echo "✓ Purge sequence completed"
 
-      - name: Check and Create Azure OpenAI
+      - name: Setup Direct OpenAI
         id: openai
         run: |
-          echo "🤖 Checking Azure OpenAI: ${{ env.OPENAI_NAME }}"
-          
-          if az cognitiveservices account show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
-            echo "✓ Azure OpenAI ${{ env.OPENAI_NAME }} exists"
-          else
-            echo "Creating Azure OpenAI ${{ env.OPENAI_NAME }}..."
-            
-            MAX_ATTEMPTS=3
-            ATTEMPT=1
-            while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-              echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
-              
-              # First attempt: try creating normally
-              if [ $ATTEMPT -eq 1 ]; then
-                az cognitiveservices account create \
-                  --name ${{ env.OPENAI_NAME }} \
-                  --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-                  --location ${{ env.AZURE_LOCATION }} \
-                  --kind OpenAI \
-                  --sku S0 2>&1 && break
-              fi
-              
-              # Subsequent attempts: try with restore flag (for soft-deleted resources)
-              if [ $ATTEMPT -gt 1 ]; then
-                echo "Attempting with restore flag (soft-deleted resource recovery)..."
-                az cognitiveservices account create \
-                  --name ${{ env.OPENAI_NAME }} \
-                  --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-                  --location ${{ env.AZURE_LOCATION }} \
-                  --kind OpenAI \
-                  --sku S0 \
-                  --restore 2>&1 && break
-              fi
-              
-              if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
-                echo "⚠️ Attempt $ATTEMPT failed, waiting 30 seconds before retry..."
-                sleep 30
-              fi
-              
-              ATTEMPT=$((ATTEMPT + 1))
-            done
-            
-            if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
-              echo "❌ Failed to create/restore Azure OpenAI after $MAX_ATTEMPTS attempts"
-              exit 1
-            fi
-            
-            echo "✓ Azure OpenAI created/restored successfully"
-            sleep 10
-          fi
-          
-          echo "Ensuring gpt-4o model deployment exists..."
-          if ! az cognitiveservices account deployment show \
-            --name ${{ env.OPENAI_NAME }} \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --deployment-name gpt-4o -o none 2>/dev/null; then
-            az cognitiveservices account deployment create \
-              --name ${{ env.OPENAI_NAME }} \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --deployment-name gpt-4o \
-              --model-name gpt-4o \
-              --model-version "2024-11-20" \
-              --model-format OpenAI \
-              --sku-capacity 3 \
-              --sku-name GlobalStandard
-          fi
-          echo "✓ Azure OpenAI ready with GPT-4o deployment"
-          
-          echo "Fetching Azure OpenAI endpoint and key for downstream jobs..."
-          
-          # Ensure subscription is set for all commands
-          az account set --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" || {
-            echo "❌ Failed to set subscription context"
-            exit 1
-          }
-          
-          # Fetch endpoint with better error handling
-          set +e  # Disable exit on error to capture error output
-          OPENAI_ENDPOINT=$(az cognitiveservices account show \
-            --name "${{ env.OPENAI_NAME }}" \
-            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
-            --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
-            --query properties.endpoint \
-            -o tsv 2>&1)
-          ENDPOINT_EXIT_CODE=$?
-          set -e  # Re-enable exit on error
-          
-          if [ $ENDPOINT_EXIT_CODE -ne 0 ] || [ -z "$OPENAI_ENDPOINT" ]; then
-            echo "❌ Failed to fetch OpenAI endpoint"
-            echo "Exit code: $ENDPOINT_EXIT_CODE"
-            echo "Response: $OPENAI_ENDPOINT"
-            echo ""
-            echo "Debugging: Show account details"
-            az cognitiveservices account show \
-              --name "${{ env.OPENAI_NAME }}" \
-              --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" 2>&1
-            exit 1
-          fi
-          
-          # Fetch key - "az cognitiveservices account keys show" does not exist;
-          # only "list" and "regenerate" are valid subcommands.
-          set +e
-          OPENAI_KEY=$(az cognitiveservices account keys list \
-            --name "${{ env.OPENAI_NAME }}" \
-            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
-            --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
-            --query key1 \
-            -o tsv 2>&1)
-          KEY_EXIT_CODE=$?
-          set -e
-          
-          if [ $KEY_EXIT_CODE -ne 0 ] || [ -z "$OPENAI_KEY" ]; then
-            echo "❌ Failed to fetch OpenAI key"
-            echo "Exit code: $KEY_EXIT_CODE"
-            echo "Response: $OPENAI_KEY"
-            exit 1
-          fi
-          
-          echo "✓ Endpoint retrieved: ${OPENAI_ENDPOINT:0:30}..."
-          echo "✓ Key retrieved"
-          
-          # NOTE: Do NOT ::add-mask:: this value here - GitHub Actions cannot
-          # propagate a masked value through job outputs (needs.*.outputs.*
-          # silently resolves to an empty string in consuming jobs). Consumers
-          # of this output mask it locally instead, right after reading it.
-          echo "endpoint=${OPENAI_ENDPOINT}" >> $GITHUB_OUTPUT
-          echo "key=${OPENAI_KEY}" >> $GITHUB_OUTPUT
+          echo "🤖 Using Direct OpenAI API (not Azure OpenAI)"
+          echo "✓ OpenAI API key configured"
+          echo "key=${{ secrets.OPENAI_API_KEY }}" >> $GITHUB_OUTPUT
 
       - name: Check and Create AI Search
         id: search
@@ -790,25 +664,19 @@ jobs:
       - name: Deploy Retriever Container App
         id: deploy
         env:
-          OPENAI_ENDPOINT: ${{ needs.provision-infrastructure.outputs.openai_endpoint }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SEARCH_ENDPOINT: ${{ needs.provision-infrastructure.outputs.search_endpoint }}
         run: |
           echo "🚀 Deploying Retriever Agent..."
           
-          # Job outputs for these keys are unreliable across jobs (learning
-          # project - simplest fix is to just re-fetch them here directly).
-          OPENAI_KEY=$(az cognitiveservices account keys list --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query key1 -o tsv)
+          # Fetch Search key from Azure
           SEARCH_KEY=$(az search admin-key show --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --service-name ${{ env.SEARCH_NAME }} --query primaryKey -o tsv)
           
           # Validate all secrets are available
           echo "Validating secrets..."
           
-          if [ -z "$OPENAI_ENDPOINT" ]; then
-            echo "❌ ERROR: openai_endpoint output is empty from provision-infrastructure job"
-            exit 1
-          fi
-          if [ -z "$OPENAI_KEY" ]; then
-            echo "❌ ERROR: failed to fetch OpenAI key"
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "❌ ERROR: OPENAI_API_KEY secret not found"
             exit 1
           fi
           if [ -z "$SEARCH_ENDPOINT" ]; then
@@ -828,8 +696,7 @@ jobs:
               --name retriever \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --secrets \
-                openai-endpoint="$OPENAI_ENDPOINT" \
-                openai-key="$OPENAI_KEY" \
+                openai-api-key="$OPENAI_API_KEY" \
                 search-endpoint="$SEARCH_ENDPOINT" \
                 search-key="$SEARCH_KEY"
 
@@ -838,9 +705,7 @@ jobs:
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --image ${{ needs.build-and-push-images.outputs.retriever_image }} \
               --set-env-vars \
-                AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
-                AZURE_OPENAI_API_KEY=secretref:openai-key \
-                AZURE_OPENAI_DEPLOYMENT=gpt-4o \
+                OPENAI_API_KEY=secretref:openai-api-key \
                 AZURE_SEARCH_ENDPOINT=secretref:search-endpoint \
                 AZURE_SEARCH_KEY=secretref:search-key \
                 AZURE_SEARCH_INDEX=documents \
@@ -862,16 +727,13 @@ jobs:
               --registry-username ${{ steps.acr.outputs.username }} \
               --registry-password "${{ steps.acr.outputs.password }}" \
               --env-vars \
-                AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
-                AZURE_OPENAI_API_KEY=secretref:openai-key \
-                AZURE_OPENAI_DEPLOYMENT=gpt-4o \
+                OPENAI_API_KEY=secretref:openai-api-key \
                 AZURE_SEARCH_ENDPOINT=secretref:search-endpoint \
                 AZURE_SEARCH_KEY=secretref:search-key \
                 AZURE_SEARCH_INDEX=documents \
                 PORT=${{ env.RETRIEVER_PORT }} \
               --secrets \
-                openai-endpoint="$OPENAI_ENDPOINT" \
-                openai-key="$OPENAI_KEY" \
+                openai-api-key="$OPENAI_API_KEY" \
                 search-endpoint="$SEARCH_ENDPOINT" \
                 search-key="$SEARCH_KEY"
           fi
@@ -885,7 +747,7 @@ jobs:
           echo "url=https://${URL}" >> $GITHUB_OUTPUT
           echo "✓ Retriever deployed: https://${URL}"
           
-          unset OPENAI_KEY SEARCH_KEY
+          unset OPENAI_API_KEY SEARCH_KEY
 
       - name: Diagnose Retriever Startup
         run: |
@@ -922,25 +784,17 @@ jobs:
       - name: Deploy Orchestrator Container App
         id: deploy
         env:
-          OPENAI_ENDPOINT: ${{ needs.provision-infrastructure.outputs.openai_endpoint }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           COSMOSDB_CONNECTION_STRING: ${{ needs.provision-infrastructure.outputs.cosmosdb_connection_string }}
           RETRIEVER_URL: ${{ needs.deploy-retriever.outputs.retriever_url }}
         run: |
           echo "🚀 Deploying Orchestrator Agent..."
           
-          # Job outputs for this key are unreliable across jobs (learning
-          # project - simplest fix is to just re-fetch it here directly).
-          OPENAI_KEY=$(az cognitiveservices account keys list --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query key1 -o tsv)
-          
           # Validate all secrets are available
           echo "Validating secrets..."
           
-          if [ -z "$OPENAI_ENDPOINT" ]; then
-            echo "❌ ERROR: openai_endpoint output is empty from provision-infrastructure job"
-            exit 1
-          fi
-          if [ -z "$OPENAI_KEY" ]; then
-            echo "❌ ERROR: failed to fetch OpenAI key"
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "❌ ERROR: OPENAI_API_KEY secret not found"
             exit 1
           fi
           if [ -z "$COSMOSDB_CONNECTION_STRING" ]; then
@@ -960,8 +814,7 @@ jobs:
               --name orchestrator \
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --secrets \
-                openai-endpoint="$OPENAI_ENDPOINT" \
-                openai-key="$OPENAI_KEY" \
+                openai-api-key="$OPENAI_API_KEY" \
                 cosmosdb-connection-string="$COSMOSDB_CONNECTION_STRING"
 
             az containerapp update \
@@ -969,9 +822,7 @@ jobs:
               --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
               --image ${{ needs.build-and-push-images.outputs.orchestrator_image }} \
               --set-env-vars \
-                AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
-                AZURE_OPENAI_API_KEY=secretref:openai-key \
-                AZURE_OPENAI_DEPLOYMENT=gpt-4o \
+                OPENAI_API_KEY=secretref:openai-api-key \
                 COSMOSDB_CONNECTION_STRING=secretref:cosmosdb-connection-string \
                 COSMOSDB_DATABASE_NAME=${{ env.SQL_DATABASE_NAME }} \
                 RETRIEVER_URL="$RETRIEVER_URL" \
@@ -993,16 +844,13 @@ jobs:
               --registry-username ${{ steps.acr.outputs.username }} \
               --registry-password "${{ steps.acr.outputs.password }}" \
               --env-vars \
-                AZURE_OPENAI_ENDPOINT=secretref:openai-endpoint \
-                AZURE_OPENAI_API_KEY=secretref:openai-key \
-                AZURE_OPENAI_DEPLOYMENT=gpt-4o \
+                OPENAI_API_KEY=secretref:openai-api-key \
                 COSMOSDB_CONNECTION_STRING=secretref:cosmosdb-connection-string \
                 COSMOSDB_DATABASE_NAME=${{ env.SQL_DATABASE_NAME }} \
                 RETRIEVER_URL="$RETRIEVER_URL" \
                 PORT=${{ env.ORCHESTRATOR_PORT }} \
               --secrets \
-                openai-endpoint="$OPENAI_ENDPOINT" \
-                openai-key="$OPENAI_KEY" \
+                openai-api-key="$OPENAI_API_KEY" \
                 cosmosdb-connection-string="$COSMOSDB_CONNECTION_STRING"
           fi
           
@@ -1015,7 +863,7 @@ jobs:
           echo "url=https://${URL}" >> $GITHUB_OUTPUT
           echo "✓ Orchestrator deployed: https://${URL}"
           
-          unset OPENAI_KEY COSMOSDB_CONNECTION_STRING
+          unset OPENAI_API_KEY COSMOSDB_CONNECTION_STRING
 
       - name: Diagnose Orchestrator Startup
         run: |

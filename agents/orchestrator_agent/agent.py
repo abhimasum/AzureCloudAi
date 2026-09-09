@@ -12,8 +12,11 @@ import sys
 from pathlib import Path
 import httpx
 from agent_framework import Agent
-from agent_framework.azure import AzureOpenAIChatClient
+from openai import OpenAI
 
+
+# Initialize OpenAI client with direct API
+_openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # Import the SQL agent from sibling directory (same container/process)
 _agents_dir = Path(__file__).parent.parent
@@ -42,11 +45,7 @@ async def ask_retriever_agent(query: str) -> str:
 
 
 root_agent = Agent(
-    client=AzureOpenAIChatClient(
-        endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT"),
-        api_key=os.environ.get("AZURE_OPENAI_API_KEY"),
-        deployment_name=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
-    ),
+    client=_openai_client,
     name="orchestrator_agent",
     tools=[ask_sql_agent, ask_retriever_agent],
     instructions="""
