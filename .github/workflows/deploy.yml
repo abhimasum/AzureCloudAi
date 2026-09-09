@@ -31,7 +31,7 @@ env:
   SQL_DATABASE_NAME: geography_index
   OPENAI_NAME: ai-agents-openai
   SEARCH_NAME: ai-agents-search-abhimasum2
-  STORAGE_NAME: aiagentsstorageabhimasum
+  STORAGE_NAME: aiagentsstorageabhimasum2
   RETRIEVER_PORT: 8081
   ORCHESTRATOR_PORT: 8002
 
