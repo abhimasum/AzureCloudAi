@@ -48,7 +48,7 @@
 
 ### 1. Azure SQL Database
 **Region:** westeurope  
-**Server:** ai-agents-sql
+**Server:** ai-agentabhimasum2sql
 **Database:** geography_db
 
 #### Tables:
@@ -94,7 +94,7 @@
   - `AZURE_SQL_PASSWORD`: Database password
 
 ### 3. Azure Storage
-- **Account:** aiagents2abhimasum2
+- **Account:** aiagentabhimasum2storage
 - **Containers:**
   - geography-docs (ingested documents)
   
@@ -104,14 +104,14 @@
   - states.md
 
 ### 4. Azure Container Registry
-- **Registry:** aiagentsacr (westeurope)
+- **Registry:** aiagentabhimasum2acr (westeurope)
 - **Images:**
   - sql-agent:latest
   - retriever-agent:latest
   - orchestrator-agent:latest
 
 ### 5. Azure OpenAI & AI Search
-- **OpenAI Deployment:** ai-agents-openai
+- **OpenAI Deployment:** ai-agentabhimasum2openai
   - Model: GPT-4o (2024-11-20)
   - Region: westeurope
   - SKU: GlobalStandard

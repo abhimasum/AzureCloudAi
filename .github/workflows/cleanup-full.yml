@@ -15,12 +15,12 @@ permissions:
 
 env:
   AZURE_RESOURCE_GROUP: azure-ai-agents
-  SQL_SERVER_NAME: ai-agents-sql-abhimasum2
-  OPENAI_NAME: ai-agents-openai
-  SEARCH_NAME: ai-agents-search-abhimasum2
-  STORAGE_NAME: aiagents2abhimasum2
-  ACR_NAME: aiagentsacr
-  CONTAINER_ENV: ai-agents-env
+  SQL_SERVER_NAME: ai-agentabhimasum2sql
+  OPENAI_NAME: ai-agentabhimasum2openai
+  SEARCH_NAME: ai-agentabhimasum2search
+  STORAGE_NAME: aiagentabhimasum2storage
+  ACR_NAME: aiagentabhimasum2acr
+  CONTAINER_ENV: ai-agentabhimasum2env
 
 jobs:
   cleanup:

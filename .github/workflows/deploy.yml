@@ -25,13 +25,13 @@ env:
   AZURE_RESOURCE_GROUP: azure-ai-agents
   AZURE_LOCATION: uksouth
   REGIONS: "northeurope westeurope uksouth centralindia southindia westindia eastus eastus2 westus canadacentral"
-  ACR_NAME: aiagentsacr
-  CONTAINER_ENV: ai-agents-env
-  COSMOSDB_ACCOUNT_NAME: ai-agents-cosmosdb
+  ACR_NAME: aiagentabhimasum2acr
+  CONTAINER_ENV: ai-agentabhimasum2env
+  COSMOSDB_ACCOUNT_NAME: ai-agentabhimasum2cosmosdb
   SQL_DATABASE_NAME: geography_index
-  OPENAI_NAME: ai-agents-openai
-  SEARCH_NAME: ai-agents-search-abhimasum2
-  STORAGE_NAME: aiagents2abhimasum2
+  OPENAI_NAME: ai-agentabhimasum2openai
+  SEARCH_NAME: ai-agentabhimasum2search
+  STORAGE_NAME: aiagentabhimasum2storage
   RETRIEVER_PORT: 8081
   ORCHESTRATOR_PORT: 8002
 
