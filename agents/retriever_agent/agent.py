@@ -10,8 +10,33 @@ from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 
 
-# Initialize OpenAI client with direct API
-_openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# Wrapper class to adapt OpenAI client to agent_framework expectations
+class OpenAIClientWrapper:
+    """Wraps the direct OpenAI client to provide the interface expected by agent_framework."""
+    
+    def __init__(self, openai_client):
+        self.client = openai_client
+    
+    def get_response(self, system_prompt: str, user_message: str, **kwargs) -> str:
+        """Get a response from the OpenAI API."""
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=0.7,
+                max_tokens=2000,
+                **kwargs
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            raise Exception(f"OpenAI API error: {str(e)}")
+
+
+# Initialize OpenAI client with direct API and wrap it
+_openai_client = OpenAIClientWrapper(OpenAI(api_key=os.environ.get("OPENAI_API_KEY")))
 
 
 # Azure AI Search configuration
