@@ -94,7 +94,7 @@
   - `AZURE_SQL_PASSWORD`: Database password
 
 ### 3. Azure Storage
-- **Account:** aiagentsstorageabhimasum2
+- **Account:** aiagents2abhimasum2
 - **Containers:**
   - geography-docs (ingested documents)
   

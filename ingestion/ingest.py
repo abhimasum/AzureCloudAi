@@ -46,7 +46,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Azure Storage
-STORAGE_ACCOUNT = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME", "aiagentsstorageabhimasum2")
+STORAGE_ACCOUNT = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME", "aiagents2abhimasum2")
 STORAGE_KEY = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
 STORAGE_CONTAINER = os.environ.get("AZURE_STORAGE_CONTAINER", "documents")
 
