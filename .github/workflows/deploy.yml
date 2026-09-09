@@ -30,7 +30,7 @@ env:
   COSMOSDB_ACCOUNT_NAME: ai-agents-cosmosdb
   SQL_DATABASE_NAME: geography_index
   OPENAI_NAME: ai-agents-openai
-  SEARCH_NAME: ai-agents-search-abhimasum
+  SEARCH_NAME: ai-agents-search-abhimasum2
   STORAGE_NAME: aiagentsstorageabhimasum
   RETRIEVER_PORT: 8081
   ORCHESTRATOR_PORT: 8002

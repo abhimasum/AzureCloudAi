@@ -17,7 +17,7 @@ env:
   AZURE_RESOURCE_GROUP: azure-ai-agents
   SQL_SERVER_NAME: ai-agents-sql-abhimasum3
   OPENAI_NAME: ai-agents-openai
-  SEARCH_NAME: ai-agents-search-abhimasum
+  SEARCH_NAME: ai-agents-search-abhimasum2
   STORAGE_NAME: aiagentsstorageabhimasum
   ACR_NAME: aiagentsacr
   CONTAINER_ENV: ai-agents-env

@@ -116,7 +116,7 @@
   - Region: westeurope
   - SKU: GlobalStandard
   
-- **AI Search Service:** ai-agents-search-abhimasum
+- **AI Search Service:** ai-agents-search-abhimasum2
   - SKU: Basic
   - Index: geography-docs (vector search enabled)
 
