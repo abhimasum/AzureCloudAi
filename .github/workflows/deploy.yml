@@ -226,7 +226,7 @@ jobs:
           az cosmosdb database create \
             --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --name ${{ env.SQL_DATABASE_NAME }} 2>&1
+            --db-name ${{ env.SQL_DATABASE_NAME }} 2>&1
           
           if [ $? -eq 0 ]; then
             echo "✓ Database created successfully"
