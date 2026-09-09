@@ -167,6 +167,9 @@ jobs:
             exit 0
           fi
           
+          echo "Registering Microsoft.DocumentDB provider..."
+          az provider register --namespace Microsoft.DocumentDB --wait
+          
           echo "Creating Cosmos DB account ${{ env.COSMOSDB_ACCOUNT_NAME }} in ${{ env.AZURE_LOCATION }}..."
           
           # Run command and capture output (|| true prevents script exit on error)
