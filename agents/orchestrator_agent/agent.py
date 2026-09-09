@@ -22,15 +22,15 @@ class OpenAIClientWrapper:
     def __init__(self, openai_client):
         self.client = openai_client
     
-    def get_response(self, system_prompt: str, user_message: str, **kwargs) -> str:
-        """Get a response from the OpenAI API."""
+    def __call__(self, messages=None, **kwargs):
+        """Make the wrapper callable for agent_framework integration."""
+        if messages is None:
+            messages = []
+        
         try:
             response = self.client.chat.completions.create(
                 model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
+                messages=messages,
                 temperature=0.7,
                 max_tokens=2000,
                 **kwargs
@@ -38,6 +38,19 @@ class OpenAIClientWrapper:
             return response.choices[0].message.content
         except Exception as e:
             raise Exception(f"OpenAI API error: {str(e)}")
+    
+    def get_response(self, system_prompt: str = None, user_message: str = None, messages: list = None, **kwargs) -> str:
+        """Get a response from the OpenAI API."""
+        if messages is None:
+            if system_prompt and user_message:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ]
+            else:
+                messages = []
+        
+        return self.__call__(messages=messages, **kwargs)
 
 
 # Initialize OpenAI client with direct API and wrap it
