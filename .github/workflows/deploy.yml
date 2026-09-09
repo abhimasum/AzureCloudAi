@@ -223,7 +223,7 @@ jobs:
           
           # Create database using Azure CLI
           echo "Creating database ${{ env.SQL_DATABASE_NAME }}..."
-          az cosmosdb sql-database create \
+          az cosmosdb database create \
             --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --name ${{ env.SQL_DATABASE_NAME }} 2>&1
@@ -236,7 +236,7 @@ jobs:
           
           # Create containers using Azure CLI
           echo "Creating 'countries' container..."
-          az cosmosdb sql-container create \
+          az cosmosdb container create \
             --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --database-name ${{ env.SQL_DATABASE_NAME }} \
@@ -244,7 +244,7 @@ jobs:
             --partition-key-path /id 2>&1
           
           echo "Creating 'states' container..."
-          az cosmosdb sql-container create \
+          az cosmosdb container create \
             --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --database-name ${{ env.SQL_DATABASE_NAME }} \
