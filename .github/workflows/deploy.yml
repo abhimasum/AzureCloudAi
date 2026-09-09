@@ -173,7 +173,7 @@ jobs:
           OUTPUT=$(az cosmosdb create \
             --name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --locations locationName=${{ env.AZURE_LOCATION }} failoverPriority=0 isZoneRedundant=false \
+            --locations "${{ env.AZURE_LOCATION }}=0 false"
             --default-consistency-level Session 2>&1 || true)
           
           # Log output for debugging
