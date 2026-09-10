@@ -40,7 +40,7 @@ from azure.search.documents.indexes.models import (
     SemanticPrioritizedFields,
 )
 from azure.core.credentials import AzureKeyCredential
-from openai import AzureOpenAI
+from openai import AzureOpenAI, OpenAI
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -147,22 +147,38 @@ def _get_documents_from_storage() -> list[dict]:
 
 
 def _generate_embeddings(text: str) -> list[float]:
-    """Generate embeddings using Azure OpenAI."""
-    if not OPENAI_ENDPOINT or not OPENAI_KEY:
-        logger.warning("Azure OpenAI not configured - embeddings will be empty")
-        return [0.0] * 1536
-
-    client = AzureOpenAI(
-        api_key=OPENAI_KEY,
-        api_version="2024-02-15-preview",
-        azure_endpoint=OPENAI_ENDPOINT
-    )
-
-    response = client.embeddings.create(
-        input=text,
-        model=OPENAI_EMBEDDING_DEPLOYMENT
-    )
-    return response.data[0].embedding
+    """Generate embeddings using Azure OpenAI or Direct OpenAI (fallback)."""
+    # Try Azure OpenAI first
+    if OPENAI_ENDPOINT and OPENAI_KEY:
+        try:
+            client = AzureOpenAI(
+                api_key=OPENAI_KEY,
+                api_version="2024-02-15-preview",
+                azure_endpoint=OPENAI_ENDPOINT
+            )
+            response = client.embeddings.create(
+                input=text,
+                model=OPENAI_EMBEDDING_DEPLOYMENT
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            logger.warning(f"Azure OpenAI embedding failed: {e}, falling back to Direct OpenAI")
+    
+    # Fallback to Direct OpenAI
+    direct_api_key = os.environ.get("OPENAI_API_KEY")
+    if direct_api_key:
+        try:
+            client = OpenAI(api_key=direct_api_key)
+            response = client.embeddings.create(
+                input=text,
+                model="text-embedding-3-small"  # More cost-effective
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            logger.error(f"Direct OpenAI embedding failed: {e}")
+    
+    logger.warning("No embedding service configured - using zero embeddings (search will not work)")
+    return [0.0] * 1536
 
 
 def run_ingestion() -> str:
