@@ -22,13 +22,21 @@ class OpenAIClientWrapper:
         if messages is None:
             messages = []
         
+        # Filter kwargs to only valid OpenAI API parameters
+        valid_params = {
+            'temperature', 'top_p', 'max_tokens', 'presence_penalty',
+            'frequency_penalty', 'stop', 'tools', 'tool_choice', 'logprobs',
+            'top_logprobs', 'seed', 'response_format', 'timeout'
+        }
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+        
         try:
             response = self.client.chat.completions.create(
                 model="gpt-4o",
                 messages=messages,
                 temperature=0.7,
                 max_tokens=2000,
-                **kwargs
+                **filtered_kwargs
             )
             return response.choices[0].message.content
         except Exception as e:
