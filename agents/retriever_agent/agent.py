@@ -4,6 +4,7 @@ This agent uses Azure AI Search for semantic vector search over ingested documen
 """
 
 import os
+import asyncio
 from agent_framework import Agent
 from openai import OpenAI
 from azure.search.documents import SearchClient
@@ -17,12 +18,11 @@ class OpenAIClientWrapper:
     def __init__(self, openai_client):
         self.client = openai_client
     
-    def __call__(self, messages=None, **kwargs):
-        """Make the wrapper callable for agent_framework integration."""
+    def _process_messages(self, messages):
+        """Convert Message objects to dicts (handle Pydantic models)."""
         if messages is None:
             messages = []
         
-        # Convert Message objects to dicts (handle Pydantic models)
         clean_messages = []
         for msg in messages:
             if isinstance(msg, dict):
@@ -37,28 +37,41 @@ class OpenAIClientWrapper:
                 # Fallback - try to convert to dict
                 clean_messages.append({"role": "user", "content": str(msg)})
         
-        # Filter kwargs to only valid OpenAI API parameters
+        return clean_messages
+    
+    def _get_filtered_kwargs(self, kwargs):
+        """Filter kwargs to only valid OpenAI API parameters."""
         valid_params = {
             'temperature', 'top_p', 'max_tokens', 'presence_penalty',
             'frequency_penalty', 'stop', 'tools', 'tool_choice', 'logprobs',
             'top_logprobs', 'seed', 'response_format', 'timeout'
         }
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
+        return {k: v for k, v in kwargs.items() if k in valid_params}
+    
+    async def __call__(self, messages=None, **kwargs):
+        """Async callable for agent_framework integration."""
+        clean_messages = self._process_messages(messages)
+        filtered_kwargs = self._get_filtered_kwargs(kwargs)
         
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=clean_messages,
-                temperature=0.7,
-                max_tokens=2000,
-                **filtered_kwargs
+            # Run OpenAI API call in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=clean_messages,
+                    temperature=0.7,
+                    max_tokens=2000,
+                    **filtered_kwargs
+                )
             )
             return response.choices[0].message.content
         except Exception as e:
             raise Exception(f"OpenAI API error: {str(e)}")
     
-    def get_response(self, system_prompt: str = None, user_message: str = None, messages: list = None, **kwargs) -> str:
-        """Get a response from the OpenAI API."""
+    async def get_response(self, system_prompt: str = None, user_message: str = None, messages: list = None, **kwargs) -> str:
+        """Get a response from the OpenAI API (async)."""
         if messages is None:
             if system_prompt and user_message:
                 messages = [
@@ -68,7 +81,7 @@ class OpenAIClientWrapper:
             else:
                 messages = []
         
-        return self.__call__(messages=messages, **kwargs)
+        return await self.__call__(messages=messages, **kwargs)
 
 
 # Initialize OpenAI client with direct API and wrap it
