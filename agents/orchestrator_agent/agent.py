@@ -27,6 +27,21 @@ class OpenAIClientWrapper:
         if messages is None:
             messages = []
         
+        # Convert Message objects to dicts (handle Pydantic models)
+        clean_messages = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                clean_messages.append(msg)
+            elif hasattr(msg, 'model_dump'):
+                # Pydantic v2
+                clean_messages.append(msg.model_dump())
+            elif hasattr(msg, 'dict'):
+                # Pydantic v1
+                clean_messages.append(msg.dict())
+            else:
+                # Fallback - try to convert to dict
+                clean_messages.append({"role": "user", "content": str(msg)})
+        
         # Filter kwargs to only valid OpenAI API parameters
         valid_params = {
             'temperature', 'top_p', 'max_tokens', 'presence_penalty',
@@ -38,7 +53,7 @@ class OpenAIClientWrapper:
         try:
             response = self.client.chat.completions.create(
                 model="gpt-4o",
-                messages=messages,
+                messages=clean_messages,
                 temperature=0.7,
                 max_tokens=2000,
                 **filtered_kwargs
