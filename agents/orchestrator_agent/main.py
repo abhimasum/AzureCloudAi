@@ -70,7 +70,14 @@ async def run(request: RunRequest):
         full_query = context_str + request.query if context_str else request.query
         
         result = await root_agent.run(full_query)
-        return {"response": str(result)}
+        
+        # Extract content from response object
+        # agent_framework returns a response object with choices
+        response_text = str(result)
+        if hasattr(result, 'choices') and result.choices:
+            response_text = result.choices[0].message.content
+        
+        return {"response": response_text}
     except Exception as e:
         logger.error(f"Error processing query: {e}", exc_info=True)
         return {"response": f"Error: {str(e)}", "error": str(e)}

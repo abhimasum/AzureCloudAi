@@ -66,7 +66,9 @@ class OpenAIClientWrapper:
                     **filtered_kwargs
                 )
             )
-            return response.choices[0].message.content
+            # Return the full response object, not just the content string
+            # agent_framework expects the response object structure
+            return response
         except Exception as e:
             raise Exception(f"OpenAI API error: {str(e)}")
     
@@ -81,7 +83,11 @@ class OpenAIClientWrapper:
             else:
                 messages = []
         
-        return await self.__call__(messages=messages, **kwargs)
+        response = await self.__call__(messages=messages, **kwargs)
+        # Extract content from response object
+        if hasattr(response, 'choices') and response.choices:
+            return response.choices[0].message.content
+        return str(response)
 
 
 # Initialize OpenAI client with direct API and wrap it

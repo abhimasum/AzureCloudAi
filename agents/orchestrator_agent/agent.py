@@ -71,7 +71,9 @@ class OpenAIClientWrapper:
                     **filtered_kwargs
                 )
             )
-            return response.choices[0].message.content
+            # Return the full response object, not just the content string
+            # agent_framework expects the response object structure
+            return response
         except Exception as e:
             raise Exception(f"OpenAI API error: {str(e)}")
     
@@ -86,7 +88,11 @@ class OpenAIClientWrapper:
             else:
                 messages = []
         
-        return await self.__call__(messages=messages, **kwargs)
+        response = await self.__call__(messages=messages, **kwargs)
+        # Extract content from response object
+        if hasattr(response, 'choices') and response.choices:
+            return response.choices[0].message.content
+        return str(response)
 
 
 # Initialize OpenAI client with direct API and wrap it
@@ -104,6 +110,9 @@ RETRIEVER_AGENT_URL = os.environ.get("RETRIEVER_AGENT_URL", "http://localhost:80
 async def ask_sql_agent(query: str) -> str:
     """Ask the SQL agent for geography index metadata (state/country IDs, capitals, lists)."""
     result = await sql_agent.run(query)
+    # Extract content from response object if needed
+    if hasattr(result, 'choices') and result.choices:
+        return result.choices[0].message.content
     return str(result)
 
 
