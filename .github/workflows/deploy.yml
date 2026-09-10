@@ -593,8 +593,42 @@ jobs:
           echo "  • Database: geography_index"
           echo "  • Containers: countries, states"
 
-  build-and-push-images:
+  test-openai-integration:
     needs: provision-infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          echo "📦 Installing OpenAI and Pydantic..."
+          pip install openai pydantic -q
+          echo "✓ Dependencies installed"
+
+      - name: Test OpenAI Integration
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          echo "🧪 Testing OpenAI Integration..."
+          echo ""
+          python test_openai_local.py
+          
+          if [ $? -eq 0 ]; then
+            echo ""
+            echo "✅ OpenAI integration test passed!"
+          else
+            echo ""
+            echo "❌ OpenAI integration test failed!"
+            exit 1
+          fi
+
+  build-and-push-images:
+    needs: [provision-infrastructure, setup-database, test-openai-integration]
     runs-on: ubuntu-latest
     outputs:
       orchestrator_image: ${{ steps.images.outputs.orchestrator }}
