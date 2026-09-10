@@ -27,7 +27,7 @@ sys.path.insert(0, str(_agents_dir))
 from sql_agent.agent import root_agent as sql_agent
 
 # URL of the retriever_agent service (separate Azure Container App)
-RETRIEVER_AGENT_URL = os.environ.get("RETRIEVER_AGENT_URL", "http://localhost:8081")
+RETRIEVER_AGENT_URL = os.environ.get("RETRIEVER_URL", os.environ.get("RETRIEVER_AGENT_URL", "http://localhost:8081"))
 
 
 async def ask_sql_agent(query: str) -> str:
