@@ -35,9 +35,6 @@ from azure.search.documents.indexes.models import (
     VectorSearch,
     HnswAlgorithmConfiguration,
     VectorSearchProfile,
-    SemanticConfiguration,
-    SemanticField,
-    SemanticPrioritizedFields,
 )
 from azure.core.credentials import AzureKeyCredential
 from openai import AzureOpenAI, OpenAI
@@ -69,6 +66,14 @@ def _create_or_get_index():
 
     index_client = SearchIndexClient(endpoint=SEARCH_ENDPOINT, credential=AzureKeyCredential(SEARCH_KEY))
 
+    # Check if index already exists
+    try:
+        existing_index = index_client.get_index(SEARCH_INDEX)
+        logger.info(f"Index '{SEARCH_INDEX}' already exists")
+        return
+    except Exception:
+        pass  # Index doesn't exist, create it
+
     # Define the search index with vector search capabilities
     fields = [
         SimpleField(name="id", type=SearchFieldDataType.String, key=True),
@@ -89,24 +94,16 @@ def _create_or_get_index():
         profiles=[VectorSearchProfile(name="myHnswProfile", algorithm_configuration_name="myHnsw")],
     )
 
-    semantic_config = SemanticConfiguration(
-        name="default",
-        prioritized_fields=SemanticPrioritizedFields(
-            content_fields=[SemanticField(field_name="content")],
-            keywords_fields=[SemanticField(field_name="title")],
-        ),
-    )
-
+    # Create simple index without semantic search (API compatibility)
     index = SearchIndex(
         name=SEARCH_INDEX,
         fields=fields,
         vector_search=vector_search,
-        semantic_search=semantic_config,
     )
 
     try:
         result = index_client.create_or_update_index(index)
-        logger.info(f"Index '{result.name}' created or updated successfully")
+        logger.info(f"Index '{result.name}' created successfully (without semantic search)")
     except Exception as e:
         logger.error(f"Failed to create index: {e}")
         raise

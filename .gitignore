@@ -4,6 +4,8 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+ingestion_env/
+*/env/
 
 # Environment / secrets
 .env
@@ -22,3 +24,13 @@ Thumbs.db
 .env.local
 .venv/
 venv/
+
+# Dependencies
+node_modules/
+dist/
+build/
+
+# Cache
+.pytest_cache/
+*.pyc
+.coverage/

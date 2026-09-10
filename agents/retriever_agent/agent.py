@@ -41,12 +41,11 @@ def search_knowledge_base(query: str, top_k: int = 10) -> str:
         return "Search not available - Azure AI Search not configured"
     
     try:
+        # Use vector search with hybrid search
         results = search_client.search(
             search_text=query,
             top=top_k,
             select=["content", "title", "chunk_id"],
-            query_type="semantic",
-            semantic_configuration_name="default"
         )
         
         passages = []
