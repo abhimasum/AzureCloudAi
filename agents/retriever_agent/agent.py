@@ -4,94 +4,17 @@ This agent uses Azure AI Search for semantic vector search over ingested documen
 """
 
 import os
-import asyncio
 from agent_framework import Agent
-from openai import OpenAI
+from agent_framework.openai import OpenAIChatCompletionClient
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 
 
-# Wrapper class to adapt OpenAI client to agent_framework expectations
-class OpenAIClientWrapper:
-    """Wraps the direct OpenAI client to provide the interface expected by agent_framework."""
-    
-    def __init__(self, openai_client):
-        self.client = openai_client
-    
-    def _process_messages(self, messages):
-        """Convert Message objects to dicts (handle Pydantic models)."""
-        if messages is None:
-            messages = []
-        
-        clean_messages = []
-        for msg in messages:
-            if isinstance(msg, dict):
-                clean_messages.append(msg)
-            elif hasattr(msg, 'model_dump'):
-                # Pydantic v2
-                clean_messages.append(msg.model_dump())
-            elif hasattr(msg, 'dict'):
-                # Pydantic v1
-                clean_messages.append(msg.dict())
-            else:
-                # Fallback - try to convert to dict
-                clean_messages.append({"role": "user", "content": str(msg)})
-        
-        return clean_messages
-    
-    def _get_filtered_kwargs(self, kwargs):
-        """Filter kwargs to only valid OpenAI API parameters."""
-        valid_params = {
-            'temperature', 'top_p', 'max_tokens', 'presence_penalty',
-            'frequency_penalty', 'stop', 'tools', 'tool_choice', 'logprobs',
-            'top_logprobs', 'seed', 'response_format', 'timeout'
-        }
-        return {k: v for k, v in kwargs.items() if k in valid_params}
-    
-    async def __call__(self, messages=None, **kwargs):
-        """Async callable for agent_framework integration."""
-        clean_messages = self._process_messages(messages)
-        filtered_kwargs = self._get_filtered_kwargs(kwargs)
-        
-        try:
-            # Run OpenAI API call in executor to avoid blocking
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=clean_messages,
-                    temperature=0.7,
-                    max_tokens=2000,
-                    **filtered_kwargs
-                )
-            )
-            # Return the full response object, not just the content string
-            # agent_framework expects the response object structure
-            return response
-        except Exception as e:
-            raise Exception(f"OpenAI API error: {str(e)}")
-    
-    async def get_response(self, system_prompt: str = None, user_message: str = None, messages: list = None, **kwargs) -> str:
-        """Get a response from the OpenAI API (async)."""
-        if messages is None:
-            if system_prompt and user_message:
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ]
-            else:
-                messages = []
-        
-        response = await self.__call__(messages=messages, **kwargs)
-        # Extract content from response object
-        if hasattr(response, 'choices') and response.choices:
-            return response.choices[0].message.content
-        return str(response)
-
-
-# Initialize OpenAI client with direct API and wrap it
-_openai_client = OpenAIClientWrapper(OpenAI(api_key=os.environ.get("OPENAI_API_KEY")))
+# Official agent_framework client - handles message/response contracts correctly
+_openai_client = OpenAIChatCompletionClient(
+    model="gpt-4o",
+    api_key=os.environ.get("OPENAI_API_KEY"),
+)
 
 
 # Azure AI Search configuration
