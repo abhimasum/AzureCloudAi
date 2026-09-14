@@ -167,159 +167,30 @@ jobs:
           echo "🚀 Setting up Azure AI Foundry Hub, Project, and Model Deployment..."
           echo ""
           
-          # Define Foundry resource names
-          HUB_NAME="ai-agent-foundry-hub"
-          PROJECT_NAME="ai-agent-foundry-project"
-          MODEL_DEPLOYMENT_NAME="gpt-4o"
+          # Install dependencies
+          echo "📦 Installing dependencies..."
+          python3 -m pip install --quiet requests azure-identity --break-system-packages 2>/dev/null || \
+          python3 -m pip install --quiet requests azure-identity 2>/dev/null || true
           
-          # Check if Hub already exists
-          echo "🔍 Checking if Foundry Hub exists: $HUB_NAME"
-          HUB_ID=$(az ai hub show --name $HUB_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query id -o tsv 2>/dev/null)
+          echo ""
+          echo "Running setup script..."
           
-          if [ -n "$HUB_ID" ] && [ "$HUB_ID" != "null" ]; then
-            echo "✓ Foundry Hub '$HUB_NAME' already exists"
+          # Run Python setup script
+          if python3 infra/setup_foundry.py; then
+            echo ""
+            echo "✅ Foundry Setup Completed!"
           else
-            echo "Creating Foundry Hub: $HUB_NAME"
-            az ai hub create \
-              --name $HUB_NAME \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --location ${{ env.AZURE_LOCATION }} \
-              --display-name "AI Agent Foundry Hub" \
-              --kind hub \
-              --version 2024-04-01-preview || {
-              echo "❌ Failed to create Foundry Hub"
-              exit 1
-            }
-            echo "✓ Foundry Hub created successfully"
+            echo ""
+            echo "⚠️ Foundry Setup encountered issues"
+            echo "   Agent code will fallback to Direct OpenAI automatically"
           fi
           
-          echo ""
-          echo "🔍 Checking if Foundry Project exists: $PROJECT_NAME"
-          PROJECT_ID=$(az ai project show --name $PROJECT_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --hub-name $HUB_NAME --query id -o tsv 2>/dev/null)
+          # Always export fallback endpoint (agents will use it if Foundry fails)
+          ENDPOINT="${FOUNDRY_ENDPOINT:-https://${{ env.AZURE_LOCATION }}.models.ai.azure.com}"
+          KEY="${FOUNDRY_KEY:-fallback-to-openai}"
           
-          if [ -n "$PROJECT_ID" ] && [ "$PROJECT_ID" != "null" ]; then
-            echo "✓ Foundry Project '$PROJECT_NAME' already exists"
-          else
-            echo "Creating Foundry Project: $PROJECT_NAME"
-            az ai project create \
-              --name $PROJECT_NAME \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --hub-name $HUB_NAME \
-              --display-name "AI Agent Foundry Project" \
-              --location ${{ env.AZURE_LOCATION }} || {
-              echo "❌ Failed to create Foundry Project"
-              exit 1
-            }
-            echo "✓ Foundry Project created successfully"
-          fi
-          
-          echo ""
-          echo "🤖 Deploying gpt-4o Model..."
-          
-          # Check if model already deployed
-          DEPLOYMENT_STATUS=$(az ai model deploy show \
-            --name $MODEL_DEPLOYMENT_NAME \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --project-name $PROJECT_NAME \
-            --hub-name $HUB_NAME \
-            --query "properties.deploymentStatus" -o tsv 2>/dev/null)
-          
-          if [ "$DEPLOYMENT_STATUS" = "Succeeded" ] || [ "$DEPLOYMENT_STATUS" = "Running" ]; then
-            echo "✓ Model deployment '$MODEL_DEPLOYMENT_NAME' already exists and is running"
-          else
-            echo "Deploying model (this may take 2-3 minutes)..."
-            az ai model deploy create \
-              --name $MODEL_DEPLOYMENT_NAME \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --project-name $PROJECT_NAME \
-              --hub-name $HUB_NAME \
-              --model "gpt-4o" \
-              --model-version "latest" \
-              --deployment-type "standard" \
-              --instance-count 1 || {
-              echo "⚠️ Model deployment creation initiated (may complete asynchronously)"
-            }
-            
-            # Wait for deployment
-            echo "⏳ Waiting for model deployment to complete (up to 5 minutes)..."
-            WAIT_COUNTER=0
-            MAX_WAITS=30
-            
-            while [ $WAIT_COUNTER -lt $MAX_WAITS ]; do
-              sleep 10
-              DEPLOYMENT_STATUS=$(az ai model deploy show \
-                --name $MODEL_DEPLOYMENT_NAME \
-                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-                --project-name $PROJECT_NAME \
-                --hub-name $HUB_NAME \
-                --query "properties.deploymentStatus" -o tsv 2>/dev/null)
-              
-              if [ "$DEPLOYMENT_STATUS" = "Succeeded" ] || [ "$DEPLOYMENT_STATUS" = "Running" ]; then
-                echo "✓ Model deployment succeeded"
-                break
-              elif [ "$DEPLOYMENT_STATUS" = "InProgress" ]; then
-                echo "  ⏳ Deployment in progress ($WAIT_COUNTER/$MAX_WAITS)..."
-              else
-                echo "  ⚠️ Deployment status: $DEPLOYMENT_STATUS"
-              fi
-              
-              WAIT_COUNTER=$((WAIT_COUNTER + 1))
-            done
-          fi
-          
-          echo ""
-          echo "🔑 Retrieving API Credentials..."
-          
-          # Get Foundry endpoint and key
-          FOUNDRY_ENDPOINT=$(az ai project show \
-            --name $PROJECT_NAME \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --hub-name $HUB_NAME \
-            --query "properties.aiModelServiceEndpoint" -o tsv 2>/dev/null)
-          
-          FOUNDRY_KEY=$(az ai project key list \
-            --name $PROJECT_NAME \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --hub-name $HUB_NAME \
-            --query "[0].key" -o tsv 2>/dev/null)
-          
-          # Fallback: try to get from hub
-          if [ -z "$FOUNDRY_ENDPOINT" ] || [ "$FOUNDRY_ENDPOINT" = "null" ]; then
-            FOUNDRY_ENDPOINT=$(az ai hub show \
-              --name $HUB_NAME \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --query "properties.aiModelServiceEndpoint" -o tsv 2>/dev/null)
-          fi
-          
-          if [ -z "$FOUNDRY_KEY" ] || [ "$FOUNDRY_KEY" = "null" ]; then
-            FOUNDRY_KEY=$(az ai hub key list \
-              --name $HUB_NAME \
-              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-              --query "[0].key" -o tsv 2>/dev/null)
-          fi
-          
-          if [ -z "$FOUNDRY_ENDPOINT" ] || [ "$FOUNDRY_ENDPOINT" = "null" ]; then
-            echo "⚠️ Warning: Could not retrieve Foundry endpoint automatically"
-            echo "   Using fallback: https://${{ env.AZURE_LOCATION }}.models.ai.azure.com"
-            FOUNDRY_ENDPOINT="https://${{ env.AZURE_LOCATION }}.models.ai.azure.com"
-          fi
-          
-          if [ -z "$FOUNDRY_KEY" ] || [ "$FOUNDRY_KEY" = "null" ]; then
-            echo "⚠️ Warning: Could not retrieve Foundry key automatically"
-            echo "   Please retrieve manually from Azure Portal"
-          fi
-          
-          # Export credentials as outputs
-          echo "foundry_endpoint=$FOUNDRY_ENDPOINT" >> $GITHUB_OUTPUT
-          echo "foundry_key=$FOUNDRY_KEY" >> $GITHUB_OUTPUT
-          
-          echo ""
-          echo "✅ Foundry Setup Complete!"
-          echo "  Hub: $HUB_NAME"
-          echo "  Project: $PROJECT_NAME"
-          echo "  Model: $MODEL_DEPLOYMENT_NAME"
-          echo "  Endpoint: $FOUNDRY_ENDPOINT"
-          echo "  Key: ${FOUNDRY_KEY:0:10}***"
+          echo "foundry_endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
+          echo "foundry_key=$KEY" >> $GITHUB_OUTPUT
 
       - name: Check and Create Cosmos DB (SQL API)
         id: cosmosdb
