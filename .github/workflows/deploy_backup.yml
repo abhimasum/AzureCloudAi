@@ -34,9 +34,6 @@ env:
   STORAGE_NAME: aiagentabhimasum2storage
   RETRIEVER_PORT: 8081
   ORCHESTRATOR_PORT: 8002
-  # Model Configuration (for Azure Foundry support)
-  MODEL_NAME: "gpt-4o"
-  USE_AZURE_FOUNDRY: "false"  # Set to "true" to use Azure AI Foundry instead of Direct OpenAI
 
 jobs:
   provision-infrastructure:
@@ -752,8 +749,6 @@ jobs:
                 AZURE_SEARCH_ENDPOINT=secretref:search-endpoint \
                 AZURE_SEARCH_KEY=secretref:search-key \
                 AZURE_SEARCH_INDEX=documents \
-                MODEL_NAME=${{ env.MODEL_NAME }} \
-                USE_AZURE_FOUNDRY=${{ env.USE_AZURE_FOUNDRY }} \
                 PORT=${{ env.RETRIEVER_PORT }}
           else
             echo "Creating new Container App..."
@@ -776,8 +771,6 @@ jobs:
                 AZURE_SEARCH_ENDPOINT=secretref:search-endpoint \
                 AZURE_SEARCH_KEY=secretref:search-key \
                 AZURE_SEARCH_INDEX=documents \
-                MODEL_NAME=${{ env.MODEL_NAME }} \
-                USE_AZURE_FOUNDRY=${{ env.USE_AZURE_FOUNDRY }} \
                 PORT=${{ env.RETRIEVER_PORT }} \
               --secrets \
                 openai-api-key="$OPENAI_API_KEY" \
@@ -873,8 +866,6 @@ jobs:
                 COSMOSDB_CONNECTION_STRING=secretref:cosmosdb-connection-string \
                 COSMOSDB_DATABASE_NAME=${{ env.SQL_DATABASE_NAME }} \
                 RETRIEVER_URL="$RETRIEVER_URL" \
-                MODEL_NAME=${{ env.MODEL_NAME }} \
-                USE_AZURE_FOUNDRY=${{ env.USE_AZURE_FOUNDRY }} \
                 PORT=${{ env.ORCHESTRATOR_PORT }}
           else
             echo "Creating new Container App..."
@@ -897,8 +888,6 @@ jobs:
                 COSMOSDB_CONNECTION_STRING=secretref:cosmosdb-connection-string \
                 COSMOSDB_DATABASE_NAME=${{ env.SQL_DATABASE_NAME }} \
                 RETRIEVER_URL="$RETRIEVER_URL" \
-                MODEL_NAME=${{ env.MODEL_NAME }} \
-                USE_AZURE_FOUNDRY=${{ env.USE_AZURE_FOUNDRY }} \
                 PORT=${{ env.ORCHESTRATOR_PORT }} \
               --secrets \
                 openai-api-key="$OPENAI_API_KEY" \

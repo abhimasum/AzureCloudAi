@@ -1,26 +1,24 @@
-"""Ingests documents into Azure AI Search index using Azure OpenAI embeddings.
+"""Ingests documents into Azure AI Search index using embeddings.
 
 Usage (local):
     python ingest.py
 
-Required env vars:
-    AZURE_STORAGE_ACCOUNT_NAME     e.g. aiagentsstorageabhimasum
-    AZURE_STORAGE_ACCOUNT_KEY      Storage account key
-    AZURE_STORAGE_CONTAINER        e.g. documents
+Supports both Azure OpenAI and Azure AI Foundry for embeddings.
 
-Azure AI Search env vars:
+Environment variables:
     AZURE_SEARCH_ENDPOINT          e.g. https://mysearch.search.windows.net
     AZURE_SEARCH_KEY               Search service API key
     AZURE_SEARCH_INDEX             e.g. documents (created if not exists)
 
-Azure OpenAI env vars:
-    AZURE_OPENAI_ENDPOINT          e.g. https://myresource.openai.azure.com
-    AZURE_OPENAI_API_KEY           OpenAI API key
-    AZURE_OPENAI_EMBEDDING_DEPLOYMENT   e.g. text-embedding-3-small
+    For embeddings, supports multiple providers:
+    - Azure OpenAI: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+    - Azure AI Foundry: USE_AZURE_FOUNDRY=true, AZURE_FOUNDRY_ENDPOINT, AZURE_FOUNDRY_KEY
+    - Direct OpenAI: OPENAI_API_KEY
 """
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 from azure.storage.blob import BlobServiceClient
@@ -37,7 +35,12 @@ from azure.search.documents.indexes.models import (
     VectorSearchProfile,
 )
 from azure.core.credentials import AzureKeyCredential
-from openai import AzureOpenAI, OpenAI
+
+# Add agents directory to path for core imports
+_agents_dir = Path(__file__).parent.parent / "agents"
+sys.path.insert(0, str(_agents_dir))
+
+from core.model_client import EmbeddingClient
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -144,38 +147,22 @@ def _get_documents_from_storage() -> list[dict]:
 
 
 def _generate_embeddings(text: str) -> list[float]:
-    """Generate embeddings using Azure OpenAI or Direct OpenAI (fallback)."""
-    # Try Azure OpenAI first
-    if OPENAI_ENDPOINT and OPENAI_KEY:
-        try:
-            client = AzureOpenAI(
-                api_key=OPENAI_KEY,
-                api_version="2024-02-15-preview",
-                azure_endpoint=OPENAI_ENDPOINT
-            )
-            response = client.embeddings.create(
-                input=text,
-                model=OPENAI_EMBEDDING_DEPLOYMENT
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            logger.warning(f"Azure OpenAI embedding failed: {e}, falling back to Direct OpenAI")
+    """Generate embeddings using configured embedding service (Foundry, Azure OpenAI, or Direct OpenAI).
     
-    # Fallback to Direct OpenAI
-    direct_api_key = os.environ.get("OPENAI_API_KEY")
-    if direct_api_key:
-        try:
-            client = OpenAI(api_key=direct_api_key)
-            response = client.embeddings.create(
-                input=text,
-                model="text-embedding-3-small"  # More cost-effective
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            logger.error(f"Direct OpenAI embedding failed: {e}")
-    
-    logger.warning("No embedding service configured - using zero embeddings (search will not work)")
-    return [0.0] * 1536
+    Uses the EmbeddingClient abstraction which supports:
+    1. Azure AI Foundry (if USE_AZURE_FOUNDRY=true and credentials provided)
+    2. Direct OpenAI (via OPENAI_API_KEY)
+    3. Fallback to zero embeddings (last resort)
+    """
+    try:
+        # Use the unified EmbeddingClient which handles provider selection
+        embedding_client = EmbeddingClient(model="text-embedding-3-small")
+        embedding = embedding_client.embed(text)
+        return embedding
+    except Exception as e:
+        logger.error(f"Embedding generation failed: {e}")
+        logger.warning("Using zero embeddings as fallback (search will not work effectively)")
+        return [0.0] * 1536
 
 
 def run_ingestion() -> str:

@@ -11,13 +11,22 @@ import os
 import sys
 from pathlib import Path
 import httpx
+import logging
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatCompletionClient
 
+logger = logging.getLogger(__name__)
+
+# Get model name from environment or use default
+MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o")
+USE_AZURE_FOUNDRY = os.environ.get("USE_AZURE_FOUNDRY", "false").lower() == "true"
+
+logger.info(f"Orchestrator Agent initialized with model={MODEL_NAME}, foundry={USE_AZURE_FOUNDRY}")
 
 # Official agent_framework client - handles message/response contracts correctly
+# Works with both Direct OpenAI and Azure Foundry (via OpenAI-compatible endpoints)
 _openai_client = OpenAIChatCompletionClient(
-    model="gpt-4o",
+    model=MODEL_NAME,
     api_key=os.environ.get("OPENAI_API_KEY"),
 )
 
