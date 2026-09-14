@@ -161,36 +161,62 @@ jobs:
           echo "❌ Failed to verify Resource Group after $MAX_RETRIES attempts"
           exit 1
 
-      - name: Setup Azure AI Foundry Hub, Project & Deploy Model
+      - name: "📋 Foundry Setup Guide: MANUAL SETUP REQUIRED"
         id: foundry
         run: |
-          echo "🚀 Setting up Azure AI Foundry Hub, Project, and Model Deployment..."
+          echo ""
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "  ⚠️  AZURE AI FOUNDRY - MANUAL SETUP REQUIRED"
+          echo "═══════════════════════════════════════════════════════════════"
+          echo ""
+          echo "Azure AI Foundry Hub/Project creation CANNOT be automated."
+          echo "Follow these steps to complete the setup:"
+          echo ""
+          echo "📖 SETUP GUIDE: Check the repository for FOUNDRY_SETUP_GUIDE.md"
+          echo ""
+          echo "QUICK 7-STEP CHECKLIST:"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  1️⃣  Go to: https://ai.azure.com"
+          echo "  2️⃣  Create Hub: ai-agent-foundry-hub (UK South)"
+          echo "  3️⃣  Create Project: ai-agent-foundry-project"
+          echo "  4️⃣  Deploy Model: gpt-4o from Model Catalog"
+          echo "  5️⃣  Get API Key from: Project Settings → API Keys"
+          echo "  6️⃣  Add GitHub secrets:"
+          echo "      - AZURE_FOUNDRY_ENDPOINT = https://uksouth.models.ai.azure.com"
+          echo "      - AZURE_FOUNDRY_KEY = [your API key]"
+          echo "  7️⃣  Re-run this workflow after adding secrets"
+          echo ""
+          echo "⏱️  Total time: ~20 minutes (one-time setup)"
+          echo ""
+          echo "✅ WITHOUT FOUNDRY: Agents will use Direct OpenAI fallback"
+          echo "✅ WITH FOUNDRY: Agents will use Azure Foundry (after secrets added)"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo ""
           
-          # Install dependencies
-          echo "📦 Installing dependencies..."
-          python3 -m pip install --quiet requests azure-identity --break-system-packages 2>/dev/null || \
-          python3 -m pip install --quiet requests azure-identity 2>/dev/null || true
-          
-          echo ""
-          echo "Running setup script..."
-          
-          # Run Python setup script
-          if python3 infra/setup_foundry.py; then
-            echo ""
-            echo "✅ Foundry Setup Completed!"
+          # Check if Foundry secrets are already configured
+          if [ -z "${{ secrets.AZURE_FOUNDRY_KEY }}" ] || [ -z "${{ secrets.AZURE_FOUNDRY_ENDPOINT }}" ]; then
+            echo "📌 Current Status: FOUNDRY SECRETS NOT CONFIGURED"
+            echo "   → Agents will work with Direct OpenAI fallback"
+            echo "   → Add secrets above to enable Azure Foundry"
           else
-            echo ""
-            echo "⚠️ Foundry Setup encountered issues"
-            echo "   Agent code will fallback to Direct OpenAI automatically"
+            echo "✅ Current Status: FOUNDRY SECRETS CONFIGURED"
+            echo "   → Checking credentials..."
+            python3 infra/setup_foundry.py
           fi
           
-          # Always export fallback endpoint (agents will use it if Foundry fails)
-          ENDPOINT="${FOUNDRY_ENDPOINT:-https://${{ env.AZURE_LOCATION }}.models.ai.azure.com}"
-          KEY="${FOUNDRY_KEY:-fallback-to-openai}"
+          echo ""
+          echo "🔗 Links:"
+          echo "   - Setup Guide: https://github.com/abhimasum/AzureCloudAi/blob/master/FOUNDRY_SETUP_GUIDE.md"
+          echo "   - Status Info: https://github.com/abhimasum/AzureCloudAi/blob/master/FOUNDRY_SETUP_STATUS.md"
+          echo "   - Azure Foundry: https://ai.azure.com"
+          echo ""
+          
+          # Export endpoints for downstream jobs
+          ENDPOINT="${{ secrets.AZURE_FOUNDRY_ENDPOINT }}:-https://${{ env.AZURE_LOCATION }}.models.ai.azure.com"
           
           echo "foundry_endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
-          echo "foundry_key=$KEY" >> $GITHUB_OUTPUT
+          echo "foundry_key_configured=${{ secrets.AZURE_FOUNDRY_KEY != '' }}" >> $GITHUB_OUTPUT
 
       - name: Check and Create Cosmos DB (SQL API)
         id: cosmosdb
