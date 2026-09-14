@@ -10,8 +10,7 @@ RUN pip install --upgrade pip setuptools wheel --no-cache-dir
 
 # Install dependencies
 COPY requirements.txt .
-RUN echo "Installing Python dependencies..." && \
-    pip install --no-cache-dir -r requirements.txt --verbose 2>&1 | tail -50 && \
+RUN pip install --no-cache-dir -r requirements.txt && \
     echo "✓ Dependencies installed successfully" || \
     (echo "ERROR: Dependency installation failed" && exit 1)
 

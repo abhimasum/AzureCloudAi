@@ -18,8 +18,7 @@ RUN pip install --upgrade pip setuptools wheel --no-cache-dir
 
 # Copy orchestrator requirements and install with verbose output for debugging
 COPY orchestrator_agent/requirements.txt .
-RUN echo "Installing Python dependencies..." && \
-    pip install --no-cache-dir \
+RUN pip install --no-cache-dir \
       agent-framework>=1.16.0 \
       agent-framework-openai>=1.14.0 \
       azure-identity>=1.15.0 \
@@ -29,8 +28,7 @@ RUN echo "Installing Python dependencies..." && \
       uvicorn>=0.27.0 \
       fastapi>=0.109.0 \
       httpx>=0.27.0 \
-      openai>=1.0.0 \
-      --verbose 2>&1 | tail -100 && \
+      openai>=1.0.0 && \
     echo "✓ Dependencies installed successfully" || \
     (echo "ERROR: Dependency installation failed" && exit 1)
 
