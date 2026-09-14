@@ -19,19 +19,20 @@ RUN pip install --upgrade pip setuptools wheel --no-cache-dir
 # Copy orchestrator requirements and install with verbose output for debugging
 COPY orchestrator_agent/requirements.txt .
 RUN echo "Installing Python dependencies..." && \
-    pip install --no-cache-dir -r requirements.txt --verbose 2>&1 | tail -50 || \
-    (echo "First attempt failed, retrying with compatible versions..." && \
-     pip install --no-cache-dir \
-       agent-framework==1.16.0 \
-       agent-framework-openai==1.14.0 \
-       azure-identity>=1.15.0 \
-       azure-ai-projects>=1.0.0 \
-       azure-cosmos>=4.5.0 \
-       azure-ai-inference>=1.0.0 \
-       uvicorn>=0.27.0 \
-       fastapi>=0.109.0 \
-       httpx>=0.27.0 \
-       openai>=1.0.0)
+    pip install --no-cache-dir \
+      agent-framework>=1.16.0 \
+      agent-framework-openai>=1.14.0 \
+      azure-identity>=1.15.0 \
+      azure-ai-projects>=1.0.0 \
+      azure-cosmos>=4.5.0 \
+      azure-ai-inference>=1.0.0 \
+      uvicorn>=0.27.0 \
+      fastapi>=0.109.0 \
+      httpx>=0.27.0 \
+      openai>=1.0.0 \
+      --verbose 2>&1 | tail -100 && \
+    echo "✓ Dependencies installed successfully" || \
+    (echo "ERROR: Dependency installation failed" && exit 1)
 
 # Copy orchestrator agent code (includes static folder), plus sql_agent (imported as a sibling package)
 COPY orchestrator_agent/ .
