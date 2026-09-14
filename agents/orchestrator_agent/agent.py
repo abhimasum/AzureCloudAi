@@ -9,6 +9,7 @@ Flow:
 
 import os
 import sys
+import asyncio
 from pathlib import Path
 import httpx
 import logging
@@ -48,11 +49,26 @@ async def ask_sql_agent(query: str) -> str:
 async def ask_retriever_agent(query: str) -> str:
     """Ask the retriever agent (separate service) for detailed RAG-grounded facts from documents."""
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(f"{RETRIEVER_AGENT_URL}/run", json={"query": query})
+        logger.info(f"Calling retriever agent for query: {query[:100]}...")
+        # Increased timeout for retriever calls (120 seconds)
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                f"{RETRIEVER_AGENT_URL}/run", 
+                json={"query": query},
+                timeout=120
+            )
             response.raise_for_status()
-            return response.json().get("response", "No response from retriever agent")
+            result = response.json().get("response", "No response from retriever agent")
+            logger.info(f"Retriever responded successfully with {len(str(result))} chars")
+            return result
+    except asyncio.TimeoutError:
+        logger.error("Retriever agent timed out")
+        return "Retriever agent took too long to respond. Please try a simpler question."
+    except httpx.TimeoutException:
+        logger.error("HTTP request to retriever timed out")
+        return "Connection to retriever agent timed out. Please try again."
     except Exception as e:
+        logger.error(f"Retriever agent error: {str(e)}")
         return f"Retriever agent error: {str(e)}"
 
 

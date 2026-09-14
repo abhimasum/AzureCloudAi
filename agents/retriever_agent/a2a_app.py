@@ -47,5 +47,13 @@ async def root():
 async def run(request: RunRequest):
     if root_agent is None:
         return {"response": f"Agent not initialized: {_init_error}"}
-    result = await root_agent.run(request.query)
-    return {"response": str(result)}
+    
+    try:
+        logger.info(f"Retriever processing query: {request.query[:100]}...")
+        result = await root_agent.run(request.query)
+        response_text = str(result).strip() if result else "No response"
+        logger.info(f"Retriever query completed with {len(response_text)} chars")
+        return {"response": response_text}
+    except Exception as e:
+        logger.error(f"Retriever error: {e}", exc_info=True)
+        return {"response": f"Error: {str(e)}", "error": str(e)}

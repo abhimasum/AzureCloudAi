@@ -2,6 +2,7 @@
 
 import os
 import logging
+import asyncio
 from pathlib import Path
 
 import uvicorn
@@ -69,11 +70,20 @@ async def run(request: RunRequest):
         # Combine context with current query
         full_query = context_str + request.query if context_str else request.query
         
+        logger.info(f"Processing query: {request.query}")
         result = await root_agent.run(full_query)
-        return {"response": str(result)}
+        
+        response_text = str(result).strip() if result else "No response"
+        logger.info(f"Query completed successfully")
+        return {"response": response_text}
+        
+    except asyncio.TimeoutError:
+        logger.error("Query timed out - agent took too long to respond")
+        return {"response": "The query took too long to process. Please try a simpler question.", "error": "timeout"}
     except Exception as e:
         logger.error(f"Error processing query: {e}", exc_info=True)
-        return {"response": f"Error: {str(e)}", "error": str(e)}
+        error_msg = f"Error: {str(e)}"
+        return {"response": error_msg, "error": str(e)}
 
 
 if __name__ == "__main__":
