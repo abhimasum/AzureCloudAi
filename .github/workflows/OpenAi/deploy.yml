@@ -7,7 +7,7 @@ on:
       - "agents/**"
       - "ingestion/**"
       - "infra/**"
-      - ".github/workflows/deploy.yml"
+      - ".github/workflows/OpenAi/deploy.yml"
   workflow_dispatch:
     inputs:
       create_resources:
@@ -34,6 +34,9 @@ env:
   STORAGE_NAME: aiagentabhimasum2storage
   RETRIEVER_PORT: 8081
   ORCHESTRATOR_PORT: 8002
+  # Model Configuration (Direct OpenAI - ENABLED)
+  MODEL_NAME: "gpt-4o"
+  USE_AZURE_FOUNDRY: "false"
 
 jobs:
   provision-infrastructure:

@@ -7,7 +7,7 @@ on:
       - "agents/**"
       - "ingestion/**"
       - "infra/**"
-      - ".github/workflows/deploy_Foundry.yml"
+      - ".github/workflows/Foundry/deploy.yml"
   workflow_dispatch:
     inputs:
       create_resources:
