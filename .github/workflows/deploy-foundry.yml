@@ -37,7 +37,7 @@ env:
   RETRIEVER_PORT: 8081
   ORCHESTRATOR_PORT: 8002
   # Model Configuration (Azure Foundry - ENABLED)
-  MODEL_NAME: "gpt-4o"
+  MODEL_NAME: "gpt-5-mini"
   USE_AZURE_FOUNDRY: "true"
   AZURE_FOUNDRY_ENDPOINT: ${{ secrets.AZURE_FOUNDRY_ENDPOINT }}
   AZURE_FOUNDRY_KEY: ${{ secrets.AZURE_FOUNDRY_KEY }}
