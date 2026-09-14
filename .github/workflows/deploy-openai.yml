@@ -1,13 +1,6 @@
 name: Deploy Azure MAF Agents using Open AI
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - "agents/**"
-      - "ingestion/**"
-      - "infra/**"
-      - ".github/workflows/deploy-openai.yml"
   workflow_dispatch:
     inputs:
       create_resources:
