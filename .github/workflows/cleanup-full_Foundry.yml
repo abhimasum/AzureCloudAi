@@ -1,4 +1,4 @@
-name: 🧹 Full Cleanup - Delete All Resources Properly
+name: 🧹 Full Cleanup - Delete All Resources Properly Foundry
 
 on:
   workflow_dispatch:
