@@ -17,7 +17,8 @@ User Query → Orchestrator Agent
 | Service | Role | Why |
 |---------|------|-----|
 | **Microsoft Agent Framework (MAF)** | Agent orchestration | Simple sub-agent delegation (v1.16.0+) |
-| **Azure OpenAI GPT-4o** | LLM reasoning | Powers all agent responses |
+| **Azure OpenAI GPT-4o** | LLM reasoning (Primary) | Powers all agent responses (auto-created) |
+| **Azure AI Foundry** | LLM reasoning (Optional) | Multi-model provider (manual setup, auto-fallback) |
 | **Azure SQL Database** | Geography index | Fast structured queries (28 states + UTs) |
 | **Azure AI Search** | Vector RAG | Semantic search over documents |
 | **Azure Blob Storage** | Document storage | Source files for ingestion |
@@ -34,10 +35,38 @@ User Query → Orchestrator Agent
 - **28 Indian States**: All states + union territories with capitals embedded
 - **A2A Protocol**: Agent-to-agent communication built into MAF
 - **Automated CI/CD**: Push to deploy via GitHub Actions
+- **Dual LLM Support**: Primary OpenAI (auto), with optional Azure Foundry fallback
+- **Works Out of Box**: No additional setup needed beyond basic deployment
 
 ---
 
-## 🚀 Quick Start
+## � LLM Provider Configuration
+
+### Default: Azure OpenAI
+- Automatically created and configured by GitHub Actions
+- Model: `gpt-4o`
+- Used immediately after deployment
+- **Cost**: ~$10-50/month for light usage
+
+### Optional: Azure AI Foundry (Manual Setup)
+- **Why Foundry?** Multi-model platform (Mistral, Claude, GPT-4o) with unified monitoring
+- **Important**: Hub/Project creation **cannot be automated** (requires Azure Portal)
+- **Setup Time**: ~20 minutes (one-time)
+- **After Setup**: Agents automatically prefer Foundry if available, fallback to OpenAI
+- **Note**: Agents work perfectly with just OpenAI - Foundry is optional enhancement
+
+**To Set Up Foundry:**
+1. See [FOUNDRY_SETUP_GUIDE.md](FOUNDRY_SETUP_GUIDE.md) for step-by-step instructions
+2. Create Hub + Project manually at https://ai.azure.com
+3. Deploy gpt-4o model
+4. Add API key to GitHub secrets
+5. Re-run workflow
+
+**Status:** Check [FOUNDRY_SETUP_STATUS.md](FOUNDRY_SETUP_STATUS.md) for current setup state
+
+---
+
+## �🚀 Quick Start
 
 ### Automated Deployment (Recommended)
 
