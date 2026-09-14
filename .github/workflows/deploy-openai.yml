@@ -1,0 +1,984 @@
+name: Deploy Azure MAF Agents using Open AI
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "agents/**"
+      - "ingestion/**"
+      - "infra/**"
+      - ".github/workflows/deploy-openai.yml"
+  workflow_dispatch:
+    inputs:
+      create_resources:
+        description: "Create Azure resources if they don't exist?"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_RESOURCE_GROUP: azure-ai-agents
+  AZURE_LOCATION: uksouth
+  REGIONS: "northeurope westeurope uksouth centralindia southindia westindia eastus eastus2 westus canadacentral"
+  ACR_NAME: aiagentabhimasum2acr
+  CONTAINER_ENV: ai-agentabhimasum2env
+  COSMOSDB_ACCOUNT_NAME: ai-agentabhimasum2cosmosdb
+  SQL_DATABASE_NAME: geography_index
+  OPENAI_NAME: ai-agentabhimasum2openai
+  SEARCH_NAME: ai-agentabhimasum2search
+  STORAGE_NAME: aiagentabhimasum2storage
+  RETRIEVER_PORT: 8081
+  ORCHESTRATOR_PORT: 8002
+  # Model Configuration (Direct OpenAI - ENABLED)
+  MODEL_NAME: "gpt-4o"
+  USE_AZURE_FOUNDRY: "false"
+
+jobs:
+  provision-infrastructure:
+    runs-on: ubuntu-latest
+    outputs:
+      acr_login_server: ${{ steps.infra.outputs.acr_login_server }}
+      cosmosdb_connection_string: ${{ steps.cosmosdb.outputs.cosmosdb_connection_string }}
+      cosmosdb_account: ${{ steps.cosmosdb.outputs.cosmosdb_account }}
+      search_endpoint: ${{ steps.search.outputs.endpoint }}
+      search_key: ${{ steps.search.outputs.key }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Verify Azure Subscription and Permissions
+        run: |
+          echo "🔍 Verifying Azure subscription and permissions..."
+          
+          # FIRST: Set subscription explicitly if provided
+          if [ ! -z "${{ env.AZURE_SUBSCRIPTION_ID }}" ]; then
+            echo "Setting subscription to: ${{ env.AZURE_SUBSCRIPTION_ID }}"
+            az account set --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" || {
+              echo "❌ Failed to set subscription"
+              exit 1
+            }
+          fi
+          
+          # Verify current subscription
+          CURRENT_SUB=$(az account show --query id -o tsv)
+          echo "Active Subscription: $CURRENT_SUB"
+          
+          # List all resource groups to verify access
+          echo ""
+          echo "Available Resource Groups:"
+          az group list --query "[].name" -o table || {
+            echo "⚠️ Could not list resource groups"
+          }
+          
+          echo ""
+          echo "✓ Subscription context verified"
+
+      - name: Register Required Resource Providers
+        run: |
+          echo "📋 Registering required Azure resource providers..."
+          
+          PROVIDERS=(
+            "Microsoft.Sql"
+            "Microsoft.CognitiveServices"
+            "Microsoft.Search"
+            "Microsoft.Storage"
+            "Microsoft.App"
+            "Microsoft.ContainerRegistry"
+            "Microsoft.OperationalInsights"
+          )
+          
+          for provider in "${PROVIDERS[@]}"; do
+            echo "Registering $provider..."
+            az provider register --namespace "$provider" --accept-terms || echo "Already registered or no action needed"
+          done
+          
+          echo ""
+          echo "Waiting for provider registration (up to 2 minutes)..."
+          sleep 120
+          
+          echo "✓ Resource providers registered"
+
+      - name: Create Resource Group (Mandatory - First Step)
+        run: |
+          echo "📦 Creating/Verifying Resource Group: ${{ env.AZURE_RESOURCE_GROUP }}"
+          echo "   Location: ${{ env.AZURE_LOCATION }}"
+          echo "   Subscription: ${{ env.AZURE_SUBSCRIPTION_ID || 'default' }}"
+          echo ""
+          
+          # Check if RG exists (use az group show, not az group exists)
+          if az group show --name ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ Resource Group ${{ env.AZURE_RESOURCE_GROUP }} already exists"
+          else
+            echo "Resource Group does not exist, creating..."
+            
+            az group create \
+              --name ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location ${{ env.AZURE_LOCATION }} || {
+              echo "❌ Failed to create Resource Group"
+              exit 1
+            }
+            
+            echo "✓ Resource Group created successfully"
+          fi
+          
+          # Final verification with retry (use az group show directly)
+          echo ""
+          echo "Verifying Resource Group is accessible..."
+          MAX_RETRIES=5
+          RETRY=0
+          
+          while [ $RETRY -lt $MAX_RETRIES ]; do
+            if az group show --name ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+              echo "✓ Resource Group verified and accessible"
+              exit 0
+            fi
+            
+            RETRY=$((RETRY + 1))
+            if [ $RETRY -lt $MAX_RETRIES ]; then
+              WAIT_TIME=$((5 + RETRY * 5))
+              echo "⚠️ RG not yet accessible, retry $RETRY/$MAX_RETRIES (waiting ${WAIT_TIME}s)..."
+              sleep $WAIT_TIME
+            fi
+          done
+          
+          echo "❌ Failed to verify Resource Group after $MAX_RETRIES attempts"
+          exit 1
+
+      - name: Check and Create Cosmos DB (SQL API)
+        id: cosmosdb
+        run: |
+          echo "🗄️ Checking Cosmos DB Account: ${{ env.COSMOSDB_ACCOUNT_NAME }}"
+          
+          # Wait for resource group to be fully ready
+          sleep 5
+          
+          # Check if Cosmos DB account exists
+          if az cosmosdb show --name ${{ env.COSMOSDB_ACCOUNT_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ Cosmos DB account ${{ env.COSMOSDB_ACCOUNT_NAME }} exists"
+            echo "cosmosdb_account=${{ env.COSMOSDB_ACCOUNT_NAME }}" >> $GITHUB_OUTPUT
+            # Get connection string even if account exists
+            COSMOSDB_CONNECTION_STRING=$(az cosmosdb keys list --name ${{ env.COSMOSDB_ACCOUNT_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --type connection-strings --output tsv 2>/dev/null | cut -f1)
+            if [ -n "$COSMOSDB_CONNECTION_STRING" ] && [ "$COSMOSDB_CONNECTION_STRING" != "null" ]; then
+              echo "cosmosdb_connection_string=$COSMOSDB_CONNECTION_STRING" >> $GITHUB_OUTPUT
+              echo "✓ Cosmos DB connection string retrieved"
+            fi
+            exit 0
+          fi
+          
+          echo "Registering Microsoft.DocumentDB provider..."
+          az provider register --namespace Microsoft.DocumentDB --wait
+          
+          echo "Creating Cosmos DB account ${{ env.COSMOSDB_ACCOUNT_NAME }} in ${{ env.AZURE_LOCATION }}..."
+          
+          # Run command and capture output (|| true prevents script exit on error)
+          OUTPUT=$(az cosmosdb create \
+            --name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --locations regionName=${{ env.AZURE_LOCATION }} failoverPriority=0 isZoneRedundant=false \
+            --default-consistency-level Session 2>&1 || true)
+          
+          # Log output for debugging
+          echo "$OUTPUT"
+          
+          # Check if Cosmos DB was actually created by trying to show it
+          if az cosmosdb show --name ${{ env.COSMOSDB_ACCOUNT_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ Cosmos DB account created successfully in ${{ env.AZURE_LOCATION }}"
+          else
+            echo "❌ Failed to create Cosmos DB account in ${{ env.AZURE_LOCATION }}"
+            echo "Error output:"
+            echo "$OUTPUT" | tail -5
+            exit 1
+          fi
+          
+          echo ""
+          echo "✓ Cosmos DB account created in region: ${{ env.AZURE_LOCATION }}"
+          echo ""
+          
+          # Get Cosmos DB connection string
+          echo "Getting Cosmos DB connection string..."
+          COSMOSDB_CONNECTION_STRING=$(az cosmosdb keys list --name ${{ env.COSMOSDB_ACCOUNT_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --type connection-strings --output tsv 2>/dev/null | cut -f1)
+          
+          if [ -z "$COSMOSDB_CONNECTION_STRING" ] || [ "$COSMOSDB_CONNECTION_STRING" = "null" ]; then
+            echo "❌ Failed to get Cosmos DB connection string"
+            exit 1
+          fi
+          
+          echo "cosmosdb_connection_string=$COSMOSDB_CONNECTION_STRING" >> $GITHUB_OUTPUT
+          echo "cosmosdb_account=${{ env.COSMOSDB_ACCOUNT_NAME }}" >> $GITHUB_OUTPUT
+          echo "✓ Cosmos DB setup complete"
+
+      - name: Create Cosmos DB Database and Containers
+        run: |
+          echo "📊 Creating Cosmos DB Database: ${{ env.SQL_DATABASE_NAME }}"
+          
+          # Get Cosmos DB connection string
+          COSMOSDB_CONNECTION_STRING=$(az cosmosdb keys list --name ${{ env.COSMOSDB_ACCOUNT_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --type connection-strings --output tsv 2>/dev/null | cut -f1)
+          
+          if [ -z "$COSMOSDB_CONNECTION_STRING" ] || [ "$COSMOSDB_CONNECTION_STRING" = "null" ]; then
+            echo "❌ Failed to get Cosmos DB connection string"
+            exit 1
+          fi
+          
+          # Create database using Azure CLI
+          echo "Creating database ${{ env.SQL_DATABASE_NAME }}..."
+          az cosmosdb sql database create \
+            --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name ${{ env.SQL_DATABASE_NAME }} 2>&1
+          
+          if [ $? -eq 0 ]; then
+            echo "✓ Database created successfully"
+          else
+            echo "⚠️ Database may already exist, continuing..."
+          fi
+          
+          # Create containers using Azure CLI
+          echo "Creating 'countries' container..."
+          az cosmosdb sql container create \
+            --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --database-name ${{ env.SQL_DATABASE_NAME }} \
+            --name countries \
+            --partition-key-path /id 2>&1
+          
+          echo "Creating 'states' container..."
+          az cosmosdb sql container create \
+            --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --database-name ${{ env.SQL_DATABASE_NAME }} \
+            --name states \
+            --partition-key-path /id 2>&1
+          
+          echo "✓ Cosmos DB database and containers created"
+
+      - name: Purge Soft-Deleted OpenAI Resources
+        run: |
+          echo "🔥 Checking for soft-deleted OpenAI resources..."
+          
+          # Check if resource already exists (healthy state)
+          if az cognitiveservices account show --name ${{ env.OPENAI_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ Resource exists in healthy state, skipping purge"
+            exit 0
+          fi
+          
+          echo "Resource appears to be soft-deleted, initiating purge..."
+          
+          # Use REST API to purge soft-deleted resource
+          TOKEN=$(az account get-access-token --query accessToken -o tsv)
+          RESOURCE_ID="/subscriptions/${{ env.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ env.AZURE_RESOURCE_GROUP }}/providers/Microsoft.CognitiveServices/accounts/${{ env.OPENAI_NAME }}"
+          
+          echo "Purging via REST API: $RESOURCE_ID"
+          
+          # Attempt REST API purge
+          curl -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://management.azure.com${RESOURCE_ID}/purge?api-version=2017-12-01" 2>&1 || echo "REST purge attempt completed"
+          
+          # Also try CLI purge multiple times
+          for i in {1..3}; do
+            echo "CLI purge attempt $i of 3..."
+            az cognitiveservices account purge \
+              --name ${{ env.OPENAI_NAME }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location ${{ env.AZURE_LOCATION }} 2>&1 || true
+            sleep 20
+          done
+          
+          echo "Waiting 60 seconds for purge to finalize..."
+          sleep 60
+          
+          echo "✓ Purge sequence completed"
+
+      - name: Setup Direct OpenAI
+        id: openai
+        run: |
+          echo "🤖 Using Direct OpenAI API (not Azure OpenAI)"
+          echo "✓ OpenAI API key configured"
+          echo "key=${{ secrets.OPENAI_API_KEY }}" >> $GITHUB_OUTPUT
+
+      - name: Check and Create AI Search
+        id: search
+        run: |
+          echo "🔍 Checking Azure AI Search: ${{ env.SEARCH_NAME }}"
+          
+          if az search service show --name ${{ env.SEARCH_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ AI Search ${{ env.SEARCH_NAME }} exists, reusing it"
+          else
+            echo "Creating AI Search ${{ env.SEARCH_NAME }}..."
+            
+            MAX_ATTEMPTS=2
+            ATTEMPT=1
+            CREATED=false
+            while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+              echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+              
+              if az search service create \
+                --name ${{ env.SEARCH_NAME }} \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location ${{ env.AZURE_LOCATION }} \
+                --sku Basic 2>&1; then
+                echo "✓ AI Search created"
+                CREATED=true
+                break
+              fi
+              
+              # Creation may fail as "name already in use" if it actually belongs to
+              # us (previous run created it, or it's still finishing provisioning).
+              # Re-check ownership before treating this as a real failure.
+              if az search service show --name ${{ env.SEARCH_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+                echo "✓ AI Search ${{ env.SEARCH_NAME }} already exists in our resource group, reusing it"
+                CREATED=true
+                break
+              fi
+              
+              if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+                echo "⚠️ Creation failed, retrying in 15 seconds..."
+                sleep 15
+              fi
+              
+              ATTEMPT=$((ATTEMPT + 1))
+            done
+            
+            if [ "$CREATED" != "true" ]; then
+              echo "❌ Failed to create AI Search - the name '${{ env.SEARCH_NAME }}' may be taken by another subscription/tenant (search service names are globally unique)."
+              exit 1
+            fi
+          fi
+          
+          echo "Fetching AI Search endpoint and admin key for downstream jobs..."
+          SEARCH_ENDPOINT="https://${{ env.SEARCH_NAME }}.search.windows.net"
+          
+          # Fetch search admin key with proper error handling
+          set +e
+          SEARCH_KEY=$(az search admin-key show \
+            --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" \
+            --service-name "${{ env.SEARCH_NAME }}" \
+            --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
+            --query primaryKey \
+            -o tsv 2>&1)
+          SEARCH_KEY_EXIT_CODE=$?
+          set -e
+          
+          if [ $SEARCH_KEY_EXIT_CODE -ne 0 ] || [ -z "$SEARCH_KEY" ]; then
+            echo "❌ Failed to fetch AI Search admin key"
+            echo "Exit code: $SEARCH_KEY_EXIT_CODE"
+            echo "Response: $SEARCH_KEY"
+            echo ""
+            echo "Debugging: Check AI Search service status"
+            az search service show \
+              --name "${{ env.SEARCH_NAME }}" \
+              --resource-group "${{ env.AZURE_RESOURCE_GROUP }}" 2>&1
+            exit 1
+          fi
+          
+          # Validate outputs are not empty
+          if [ -z "$SEARCH_ENDPOINT" ]; then
+            echo "❌ ERROR: SEARCH_ENDPOINT is empty!"
+            exit 1
+          fi
+          if [ -z "$SEARCH_KEY" ]; then
+            echo "❌ ERROR: SEARCH_KEY is empty!"
+            exit 1
+          fi
+          
+          echo "✓ Endpoint: ${SEARCH_ENDPOINT}"
+          echo "✓ Key retrieved"
+          
+          # NOTE: Do NOT ::add-mask:: this value here - see note in the OpenAI
+          # key step above; masking here breaks cross-job output propagation.
+          echo "endpoint=${SEARCH_ENDPOINT}" >> $GITHUB_OUTPUT
+          echo "key=${SEARCH_KEY}" >> $GITHUB_OUTPUT
+
+      - name: Check and Create Storage Account
+        run: |
+          echo "💾 Checking Storage Account: ${{ env.STORAGE_NAME }}"
+          
+          if az storage account show --name ${{ env.STORAGE_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+            echo "✓ Storage Account ${{ env.STORAGE_NAME }} exists"
+          else
+            echo "Creating Storage Account ${{ env.STORAGE_NAME }}..."
+            
+            MAX_ATTEMPTS=2
+            ATTEMPT=1
+            CREATED=false
+            while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+              echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+              
+              if az storage account create \
+                --name ${{ env.STORAGE_NAME }} \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location ${{ env.AZURE_LOCATION }} \
+                --sku Standard_LRS 2>&1; then
+                echo "✓ Storage Account created"
+                CREATED=true
+                break
+              fi
+              
+              # Creation may fail as "already taken" if it actually belongs to us
+              # (previous run created it, or it's still finishing provisioning).
+              if az storage account show --name ${{ env.STORAGE_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} -o none 2>/dev/null; then
+                echo "✓ Storage Account ${{ env.STORAGE_NAME }} already exists in our resource group, reusing it"
+                CREATED=true
+                break
+              fi
+              
+              if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+                echo "⚠️ Creation failed, retrying in 10 seconds..."
+                sleep 10
+              fi
+              
+              ATTEMPT=$((ATTEMPT + 1))
+            done
+            
+            if [ "$CREATED" != "true" ]; then
+              echo "❌ Failed to create Storage Account - the name '${{ env.STORAGE_NAME }}' may be taken by another subscription/tenant (storage account names are globally unique)."
+              exit 1
+            fi
+          fi
+          
+          echo "Creating blob container..."
+          STORAGE_CONN=$(az storage account show-connection-string --name ${{ env.STORAGE_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query connectionString -o tsv)
+          
+          az storage container create --name documents --connection-string "$STORAGE_CONN" 2>/dev/null || echo "✓ Container already exists"
+          echo "✓ Storage Account ready"
+
+      - name: Check and Create Container Registry
+        id: infra
+        run: |
+          echo "📦 Checking Azure Container Registry..."
+          
+          if az acr show --name ${{ env.ACR_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+            echo "✓ ACR ${{ env.ACR_NAME }} exists"
+          else
+            echo "Creating ACR ${{ env.ACR_NAME }}..."
+            
+            MAX_ATTEMPTS=2
+            ATTEMPT=1
+            while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+              echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+              
+              az acr create \
+                --name ${{ env.ACR_NAME }} \
+                --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+                --location ${{ env.AZURE_LOCATION }} \
+                --sku Basic \
+                --admin-enabled true 2>&1
+              
+              if [ $? -eq 0 ]; then
+                echo "✓ ACR created"
+                break
+              fi
+              
+              if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+                echo "⚠️ Creation failed, retrying in 10 seconds..."
+                sleep 10
+              fi
+              
+              ATTEMPT=$((ATTEMPT + 1))
+            done
+            
+            if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+              echo "❌ Failed to create ACR"
+              exit 1
+            fi
+          fi
+          
+          ACR_SERVER=$(az acr show --name ${{ env.ACR_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query loginServer -o tsv)
+          echo "acr_login_server=${ACR_SERVER}" >> $GITHUB_OUTPUT
+          echo "✓ ACR ready: $ACR_SERVER"
+
+      - name: Check and Create Container Apps Environment
+        run: |
+          echo "🌐 Checking Container Apps Environment..."
+          
+          if az containerapp env show --name ${{ env.CONTAINER_ENV }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+            echo "✓ Container Apps Environment ${{ env.CONTAINER_ENV }} exists"
+            exit 0
+          fi
+          
+          echo "Creating Container Apps Environment ${{ env.CONTAINER_ENV }}..."
+          
+          MAX_ATTEMPTS=2
+          ATTEMPT=1
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+            
+            az containerapp env create \
+              --name ${{ env.CONTAINER_ENV }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --location ${{ env.AZURE_LOCATION }} 2>&1
+            
+            if [ $? -eq 0 ]; then
+              echo "✓ Container Apps Environment created"
+              exit 0
+            fi
+            
+            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+              echo "⚠️ Creation failed, retrying in 30 seconds..."
+              sleep 30
+            fi
+            
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          
+          echo "❌ Failed to create Container Apps Environment"
+          exit 1
+
+      - name: 🎉 Infrastructure Provisioning Complete
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ INFRASTRUCTURE READY"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Resource Group: ${{ env.AZURE_RESOURCE_GROUP }}"
+          echo "Region Used: ${{ env.AZURE_LOCATION }}"
+          echo "Cosmos DB: ${{ steps.cosmosdb.outputs.cosmosdb_account }}"
+          echo "ACR: ${{ steps.infra.outputs.acr_login_server }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  setup-database:
+    needs: provision-infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Verify Cosmos DB Database and Containers
+        run: |
+          echo "🗄️ Verifying Cosmos DB Database: ${{ env.SQL_DATABASE_NAME }}"
+          
+          # Verify database exists
+          az cosmosdb sql database show \
+            --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --name ${{ env.SQL_DATABASE_NAME }} -o none 2>/dev/null || {
+            echo "❌ Cosmos DB database not found"
+            exit 1
+          }
+          echo "✓ Database verified"
+          
+          # Verify countries container exists
+          az cosmosdb sql container show \
+            --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --database-name ${{ env.SQL_DATABASE_NAME }} \
+            --name countries -o none 2>/dev/null || {
+            echo "❌ Countries container not found"
+            exit 1
+          }
+          echo "✓ Countries container verified"
+          
+          # Verify states container exists
+          az cosmosdb sql container show \
+            --account-name ${{ env.COSMOSDB_ACCOUNT_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --database-name ${{ env.SQL_DATABASE_NAME }} \
+            --name states -o none 2>/dev/null || {
+            echo "❌ States container not found"
+            exit 1
+          }
+          echo "✓ States container verified"
+          
+          echo "✓ Cosmos DB setup complete"
+          echo "  • Database: geography_index"
+          echo "  • Containers: countries, states"
+
+  test-openai-integration:
+    needs: provision-infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          echo "📦 Installing OpenAI and Pydantic..."
+          pip install openai pydantic -q
+          echo "✓ Dependencies installed"
+
+      - name: Test OpenAI Integration
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          echo "🧪 Testing OpenAI Integration..."
+          echo ""
+          python test_openai_local.py
+          
+          if [ $? -eq 0 ]; then
+            echo ""
+            echo "✅ OpenAI integration test passed!"
+          else
+            echo ""
+            echo "❌ OpenAI integration test failed!"
+            exit 1
+          fi
+
+  build-and-push-images:
+    needs: [provision-infrastructure, setup-database, test-openai-integration]
+    runs-on: ubuntu-latest
+    outputs:
+      orchestrator_image: ${{ steps.images.outputs.orchestrator }}
+      retriever_image: ${{ steps.images.outputs.retriever }}
+      ingestion_image: ${{ steps.images.outputs.ingestion }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Login to ACR
+        run: |
+          az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build and Push Images
+        id: images
+        run: |
+          ACR_SERVER="${{ needs.provision-infrastructure.outputs.acr_login_server }}"
+          
+          echo "🐳 Building orchestrator..."
+          ORCH_IMAGE="${ACR_SERVER}/orchestrator:${{ github.sha }}"
+          docker build -t $ORCH_IMAGE -f agents/orchestrator_agent/Dockerfile agents/
+          docker push $ORCH_IMAGE
+          docker tag $ORCH_IMAGE ${ACR_SERVER}/orchestrator:latest
+          docker push ${ACR_SERVER}/orchestrator:latest
+          echo "orchestrator=${ORCH_IMAGE}" >> $GITHUB_OUTPUT
+          
+          echo "🐳 Building retriever..."
+          RETR_IMAGE="${ACR_SERVER}/retriever:${{ github.sha }}"
+          docker build -t $RETR_IMAGE agents/retriever_agent
+          docker push $RETR_IMAGE
+          docker tag $RETR_IMAGE ${ACR_SERVER}/retriever:latest
+          docker push ${ACR_SERVER}/retriever:latest
+          echo "retriever=${RETR_IMAGE}" >> $GITHUB_OUTPUT
+          
+          echo "🐳 Building ingestion..."
+          ING_IMAGE="${ACR_SERVER}/ingestion:${{ github.sha }}"
+          docker build -t $ING_IMAGE ingestion
+          docker push $ING_IMAGE
+          docker tag $ING_IMAGE ${ACR_SERVER}/ingestion:latest
+          docker push ${ACR_SERVER}/ingestion:latest
+          echo "ingestion=${ING_IMAGE}" >> $GITHUB_OUTPUT
+
+      - name: 🎉 Images Built and Pushed
+        run: |
+          echo "✅ All Docker images built and pushed to ACR"
+
+  deploy-retriever:
+    needs: [provision-infrastructure, setup-database, build-and-push-images]
+    runs-on: ubuntu-latest
+    outputs:
+      retriever_url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get ACR Credentials
+        id: acr
+        run: |
+          ACR_USER=$(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv)
+          ACR_PASS=$(az acr credential show --name ${{ env.ACR_NAME }} --query passwords[0].value -o tsv)
+          echo "username=${ACR_USER}" >> $GITHUB_OUTPUT
+          echo "::add-mask::${ACR_PASS}"
+          echo "password=${ACR_PASS}" >> $GITHUB_OUTPUT
+
+      - name: Deploy Retriever Container App
+        id: deploy
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SEARCH_ENDPOINT: ${{ needs.provision-infrastructure.outputs.search_endpoint }}
+        run: |
+          echo "🚀 Deploying Retriever Agent..."
+          
+          # Fetch Search key from Azure
+          SEARCH_KEY=$(az search admin-key show --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --service-name ${{ env.SEARCH_NAME }} --query primaryKey -o tsv)
+          
+          # Validate all secrets are available
+          echo "Validating secrets..."
+          
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "❌ ERROR: OPENAI_API_KEY secret not found"
+            exit 1
+          fi
+          if [ -z "$SEARCH_ENDPOINT" ]; then
+            echo "❌ ERROR: search_endpoint output is empty from provision-infrastructure job"
+            exit 1
+          fi
+          if [ -z "$SEARCH_KEY" ]; then
+            echo "❌ ERROR: failed to fetch Search key"
+            exit 1
+          fi
+          
+          echo "✓ All secrets validated and available"
+          
+          if az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+            echo "Updating existing Container App..."
+            az containerapp secret set \
+              --name retriever \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --secrets \
+                openai-api-key="$OPENAI_API_KEY" \
+                search-endpoint="$SEARCH_ENDPOINT" \
+                search-key="$SEARCH_KEY"
+
+            az containerapp update \
+              --name retriever \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --image ${{ needs.build-and-push-images.outputs.retriever_image }} \
+              --set-env-vars \
+                OPENAI_API_KEY=secretref:openai-api-key \
+                AZURE_SEARCH_ENDPOINT=secretref:search-endpoint \
+                AZURE_SEARCH_KEY=secretref:search-key \
+                AZURE_SEARCH_INDEX=documents \
+                PORT=${{ env.RETRIEVER_PORT }}
+          else
+            echo "Creating new Container App..."
+            az containerapp create \
+              --name retriever \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --environment ${{ env.CONTAINER_ENV }} \
+              --image ${{ needs.build-and-push-images.outputs.retriever_image }} \
+              --target-port ${{ env.RETRIEVER_PORT }} \
+              --ingress external \
+              --min-replicas 0 \
+              --max-replicas 5 \
+              --cpu 0.25 \
+              --memory 0.5Gi \
+              --registry-server ${{ needs.provision-infrastructure.outputs.acr_login_server }} \
+              --registry-username ${{ steps.acr.outputs.username }} \
+              --registry-password "${{ steps.acr.outputs.password }}" \
+              --env-vars \
+                OPENAI_API_KEY=secretref:openai-api-key \
+                AZURE_SEARCH_ENDPOINT=secretref:search-endpoint \
+                AZURE_SEARCH_KEY=secretref:search-key \
+                AZURE_SEARCH_INDEX=documents \
+                PORT=${{ env.RETRIEVER_PORT }} \
+              --secrets \
+                openai-api-key="$OPENAI_API_KEY" \
+                search-endpoint="$SEARCH_ENDPOINT" \
+                search-key="$SEARCH_KEY"
+          fi
+          
+          # Restart container to ensure it picks up environment changes
+          echo "Restarting retriever container app..."
+          LATEST_REVISION=$(az containerapp revision list --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          az containerapp revision restart --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --revision "$LATEST_REVISION"
+          
+          URL=$(az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          echo "url=https://${URL}" >> $GITHUB_OUTPUT
+          echo "✓ Retriever deployed: https://${URL}"
+          
+          unset OPENAI_API_KEY SEARCH_KEY
+
+      - name: Diagnose Retriever Startup
+        run: |
+          echo "Waiting for container to start..."
+          sleep 20
+          echo "--- Recent console logs ---"
+          az containerapp logs show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --type console --tail 100 || echo "Could not fetch logs"
+          echo "--- Testing endpoint ---"
+          URL=$(az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          curl -sS -m 15 -o /dev/null -w "HTTP %{http_code}, time %{time_total}s\n" "https://${URL}/" || echo "curl failed"
+
+  deploy-orchestrator:
+    needs: [provision-infrastructure, setup-database, build-and-push-images, deploy-retriever]
+    runs-on: ubuntu-latest
+    outputs:
+      orchestrator_url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get ACR Credentials
+        id: acr
+        run: |
+          ACR_USER=$(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv)
+          ACR_PASS=$(az acr credential show --name ${{ env.ACR_NAME }} --query passwords[0].value -o tsv)
+          echo "username=${ACR_USER}" >> $GITHUB_OUTPUT
+          echo "::add-mask::${ACR_PASS}"
+          echo "password=${ACR_PASS}" >> $GITHUB_OUTPUT
+
+      - name: Deploy Orchestrator Container App
+        id: deploy
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          COSMOSDB_CONNECTION_STRING: ${{ needs.provision-infrastructure.outputs.cosmosdb_connection_string }}
+          RETRIEVER_URL: ${{ needs.deploy-retriever.outputs.retriever_url }}
+        run: |
+          echo "🚀 Deploying Orchestrator Agent..."
+          
+          # Validate all secrets are available
+          echo "Validating secrets..."
+          
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "❌ ERROR: OPENAI_API_KEY secret not found"
+            exit 1
+          fi
+          if [ -z "$COSMOSDB_CONNECTION_STRING" ]; then
+            echo "❌ ERROR: cosmosdb_connection_string output is empty from provision-infrastructure job"
+            exit 1
+          fi
+          if [ -z "$RETRIEVER_URL" ]; then
+            echo "❌ ERROR: retriever_url output is empty from deploy-retriever job"
+            exit 1
+          fi
+          
+          echo "✓ All secrets validated and available"
+          
+          if az containerapp show --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} 2>/dev/null; then
+            echo "Updating existing Container App..."
+            az containerapp secret set \
+              --name orchestrator \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --secrets \
+                openai-api-key="$OPENAI_API_KEY" \
+                cosmosdb-connection-string="$COSMOSDB_CONNECTION_STRING"
+
+            az containerapp update \
+              --name orchestrator \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --image ${{ needs.build-and-push-images.outputs.orchestrator_image }} \
+              --set-env-vars \
+                OPENAI_API_KEY=secretref:openai-api-key \
+                COSMOSDB_CONNECTION_STRING=secretref:cosmosdb-connection-string \
+                COSMOSDB_DATABASE_NAME=${{ env.SQL_DATABASE_NAME }} \
+                RETRIEVER_URL="$RETRIEVER_URL" \
+                PORT=${{ env.ORCHESTRATOR_PORT }}
+          else
+            echo "Creating new Container App..."
+            az containerapp create \
+              --name orchestrator \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --environment ${{ env.CONTAINER_ENV }} \
+              --image ${{ needs.build-and-push-images.outputs.orchestrator_image }} \
+              --target-port ${{ env.ORCHESTRATOR_PORT }} \
+              --ingress external \
+              --min-replicas 1 \
+              --max-replicas 10 \
+              --cpu 0.5 \
+              --memory 1.0Gi \
+              --registry-server ${{ needs.provision-infrastructure.outputs.acr_login_server }} \
+              --registry-username ${{ steps.acr.outputs.username }} \
+              --registry-password "${{ steps.acr.outputs.password }}" \
+              --env-vars \
+                OPENAI_API_KEY=secretref:openai-api-key \
+                COSMOSDB_CONNECTION_STRING=secretref:cosmosdb-connection-string \
+                COSMOSDB_DATABASE_NAME=${{ env.SQL_DATABASE_NAME }} \
+                RETRIEVER_URL="$RETRIEVER_URL" \
+                PORT=${{ env.ORCHESTRATOR_PORT }} \
+              --secrets \
+                openai-api-key="$OPENAI_API_KEY" \
+                cosmosdb-connection-string="$COSMOSDB_CONNECTION_STRING"
+          fi
+          
+          # Restart container to ensure it picks up environment changes
+          echo "Restarting orchestrator container app..."
+          LATEST_REVISION=$(az containerapp revision list --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          az containerapp revision restart --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --revision "$LATEST_REVISION"
+          
+          URL=$(az containerapp show --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          echo "url=https://${URL}" >> $GITHUB_OUTPUT
+          echo "✓ Orchestrator deployed: https://${URL}"
+          
+          unset OPENAI_API_KEY COSMOSDB_CONNECTION_STRING
+
+      - name: Diagnose Orchestrator Startup
+        run: |
+          echo "Waiting for container to start..."
+          sleep 20
+          echo "--- Recent console logs ---"
+          az containerapp logs show --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --type console --tail 100 || echo "Could not fetch logs"
+          echo "--- Testing endpoint ---"
+          URL=$(az containerapp show --name orchestrator --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          curl -sS -m 15 -o /dev/null -w "HTTP %{http_code}, time %{time_total}s\n" "https://${URL}/" || echo "curl failed"
+
+  upload-documents:
+    needs: [provision-infrastructure, deploy-orchestrator]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Upload Documents to Blob Storage
+        run: |
+          echo "📤 Uploading documents to Azure Blob Storage..."
+          STORAGE_NAME=$(az storage account list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          # --auth-mode login needs an Azure AD "Storage Blob Data Contributor"
+          # RBAC role assignment (not granted) - use the account key instead.
+          STORAGE_KEY=$(az storage account keys list --account-name $STORAGE_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].value" -o tsv)
+          
+          az storage blob upload-batch \
+            --account-name $STORAGE_NAME \
+            --account-key "$STORAGE_KEY" \
+            --destination documents \
+            --source data/sample_docs/ \
+            --overwrite
+          
+          echo "✓ Documents uploaded: india.md, states.md, districtandplace.md"
+
+  deployment-summary:
+    needs: [deploy-orchestrator, upload-documents]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get Retriever URL
+        id: retriever
+        run: |
+          URL=$(az containerapp show --name retriever --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          echo "url=https://${URL}" >> $GITHUB_OUTPUT
+
+      - name: 🎉 Deployment Complete
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ DEPLOYMENT COMPLETED SUCCESSFULLY"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "📦 Deployed Services:"
+          echo "   ✓ Azure Cosmos DB (SQL API) - geography_index"
+          echo "   ✓ Retriever Agent (A2A): ${{ steps.retriever.outputs.url }}"
+          echo "   ✓ Orchestrator Agent: ${{ needs.deploy-orchestrator.outputs.orchestrator_url }}"
+          echo "   ✓ Sample documents uploaded to Blob Storage"
+          echo ""
+          echo "🌐 Test Your Deployment:"
+          echo "   Open: ${{ needs.deploy-orchestrator.outputs.orchestrator_url }}"
+          echo ""
+          echo "💡 Try These Questions:"
+          echo "   • List all Indian states"
+          echo "   • What is the capital of Maharashtra?"
+          echo "   • Tell me about India"
+          echo "   • What is the culture of Maharashtra?"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
