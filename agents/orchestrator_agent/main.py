@@ -89,4 +89,5 @@ async def run(request: RunRequest):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     logger.info(f"Starting uvicorn server on port {port}")
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    # Increased timeout to 300 seconds (5 minutes) for long-running queries
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info", timeout_keep_alive=300)

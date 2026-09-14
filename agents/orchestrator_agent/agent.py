@@ -50,25 +50,25 @@ async def ask_retriever_agent(query: str) -> str:
     """Ask the retriever agent (separate service) for detailed RAG-grounded facts from documents."""
     try:
         logger.info(f"Calling retriever agent for query: {query[:100]}...")
-        # Increased timeout for retriever calls (120 seconds)
-        async with httpx.AsyncClient(timeout=120) as client:
+        # Increased timeout to 180 seconds (3 minutes) for complex RAG queries
+        async with httpx.AsyncClient(timeout=180.0) as client:
             response = await client.post(
                 f"{RETRIEVER_AGENT_URL}/run", 
                 json={"query": query},
-                timeout=120
+                timeout=180.0
             )
             response.raise_for_status()
             result = response.json().get("response", "No response from retriever agent")
             logger.info(f"Retriever responded successfully with {len(str(result))} chars")
             return result
     except asyncio.TimeoutError:
-        logger.error("Retriever agent timed out")
-        return "Retriever agent took too long to respond. Please try a simpler question."
+        logger.error("Retriever agent timed out after 180 seconds")
+        return "Query took too long. The retriever agent needs more time for this complex question. Please try a simpler or more specific query."
     except httpx.TimeoutException:
         logger.error("HTTP request to retriever timed out")
-        return "Connection to retriever agent timed out. Please try again."
+        return "Connection to retriever agent timed out. Please try a simpler question."
     except Exception as e:
-        logger.error(f"Retriever agent error: {str(e)}")
+        logger.error(f"Retriever agent error: {str(e)}", exc_info=True)
         return f"Retriever agent error: {str(e)}"
 
 

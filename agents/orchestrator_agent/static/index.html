@@ -335,14 +335,21 @@
                 sendBtn.disabled = true;
                 queryInput.disabled = true;
 
+                // Create an AbortController with 5-minute timeout for complex queries
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minutes
+
                 const response = await fetch('/run', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
                         query: userQuery,
                         context: conversationHistory
-                    })
+                    }),
+                    signal: controller.signal
                 });
+
+                clearTimeout(timeoutId);
 
                 const data = await response.json();
                 removeTypingIndicator();
@@ -356,7 +363,11 @@
                 }
             } catch (error) {
                 removeTypingIndicator();
-                addMessage('Connection error: ' + error.message, 'error');
+                if (error.name === 'AbortError') {
+                    addMessage('Connection error: Request timed out after 5 minutes. Please try a simpler question.', 'error');
+                } else {
+                    addMessage('Connection error: ' + error.message, 'error');
+                }
             } finally {
                 isLoading = false;
                 sendBtn.disabled = false;
