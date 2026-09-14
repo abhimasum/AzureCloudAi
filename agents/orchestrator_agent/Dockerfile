@@ -24,7 +24,6 @@ RUN pip install --no-cache-dir \
       azure-identity>=1.15.0 \
       azure-ai-projects>=1.0.0 \
       azure-cosmos>=4.5.0 \
-      azure-ai-inference>=1.0.0 \
       uvicorn>=0.27.0 \
       fastapi>=0.109.0 \
       httpx>=0.27.0 \
