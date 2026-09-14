@@ -1,50 +1,31 @@
 #!/usr/bin/env python3
 """
-Setup Azure AI Foundry Hub, Project, and Model Deployment (REST API Approach)
-Minimal dependencies - uses only requests and Azure CLI credentials
+Setup Azure AI Foundry Hub, Project via Azure Portal Manual Step
+Azure AI Foundry doesn't support automated REST API creation yet.
+This script verifies the setup and retrieves credentials from environment.
 """
 
 import os
 import sys
 import json
-import time
 import logging
-import subprocess
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
-def get_access_token() -> str:
-    """Get Azure access token using Azure CLI"""
-    try:
-        result = subprocess.run(
-            ["az", "account", "get-access-token", "--query", "accessToken", "-o", "tsv"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30
-        )
-        return result.stdout.strip()
-    except Exception as e:
-        logger.error(f"❌ Failed to get access token: {e}")
-        raise
 
-
-def setup_foundry_via_rest() -> dict:
-    """Setup Foundry using pure REST API calls"""
+def setup_foundry_manually() -> dict:
+    """
+    Azure AI Foundry resources must be created via Azure Portal.
+    This function guides the user and verifies the setup.
+    """
     
     credentials = {}
     
     try:
-        import requests
-    except ImportError:
-        logger.error("requests library not installed")
-        subprocess.run([sys.executable, "-m", "pip", "install", "requests"], check=False)
-        import requests
-    
-    try:
-        logger.info("🚀 Setting up Azure AI Foundry via REST API...")
+        logger.info("🚀 Setting up Azure AI Foundry Credentials...")
+        logger.info("")
         
         # Get environment variables
         subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID")
@@ -55,109 +36,59 @@ def setup_foundry_via_rest() -> dict:
             logger.error("❌ AZURE_SUBSCRIPTION_ID not set")
             return {}
         
-        # Get auth token
-        logger.info("🔐 Authenticating...")
-        token = get_access_token()
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-        
         hub_name = "ai-agent-foundry-hub"
         project_name = "ai-agent-foundry-project"
-        api_version = "2024-04-01-preview"
         
-        base_url = (
-            f"https://management.azure.com/subscriptions/{subscription_id}/"
-            f"resourceGroups/{resource_group}/providers/Microsoft.MachineLearning"
-        )
-        
-        # ========== CREATE HUB ==========
-        logger.info("")
-        logger.info(f"🚀 Creating Foundry Hub: {hub_name}")
-        
-        hub_url = f"{base_url}/registries/{hub_name}?api-version={api_version}"
-        hub_payload = {
-            "location": location,
-            "kind": "hub",
-            "properties": {
-                "display_name": "AI Agent Foundry Hub",
-                "description": "Automated AI Agent Foundry Hub"
-            }
-        }
-        
-        try:
-            response = requests.put(hub_url, headers=headers, json=hub_payload, timeout=60)
-            if response.status_code in [200, 201, 202]:
-                logger.info("✓ Hub creation initiated")
-            elif response.status_code == 409:
-                logger.info("✓ Hub already exists")
-            else:
-                logger.warning(f"⚠️  Hub response: {response.status_code}")
-                if response.text:
-                    logger.warning(f"    Error: {response.text[:200]}")
-        except requests.exceptions.Timeout:
-            logger.warning("⚠️  Hub creation timeout (may still be processing)")
-        except Exception as e:
-            logger.warning(f"⚠️  Hub creation error: {e}")
-        
-        # Wait for hub to be ready
-        logger.info("⏳ Waiting for Hub to be ready (20s)...")
-        time.sleep(20)
-        
-        # ========== CREATE PROJECT ==========
-        logger.info(f"🔧 Creating Foundry Project: {project_name}")
-        
-        project_url = f"{base_url}/projects/{project_name}?api-version={api_version}"
-        project_payload = {
-            "location": location,
-            "properties": {
-                "display_name": "AI Agent Foundry Project",
-                "description": "Automated AI Agent Project",
-                "hub_resource_id": (
-                    f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}/"
-                    f"providers/Microsoft.MachineLearning/registries/{hub_name}"
-                )
-            }
-        }
-        
-        try:
-            response = requests.put(project_url, headers=headers, json=project_payload, timeout=60)
-            if response.status_code in [200, 201, 202]:
-                logger.info("✓ Project creation initiated")
-            elif response.status_code == 409:
-                logger.info("✓ Project already exists")
-            else:
-                logger.warning(f"⚠️  Project response: {response.status_code}")
-                if response.text:
-                    logger.warning(f"    Error: {response.text[:200]}")
-        except requests.exceptions.Timeout:
-            logger.warning("⚠️  Project creation timeout (may still be processing)")
-        except Exception as e:
-            logger.warning(f"⚠️  Project creation error: {e}")
-        
-        # ========== GET CREDENTIALS ==========
-        logger.info("")
-        logger.info("🔑 Retrieving credentials...")
-        
-        # Construct endpoint
+        # ========== FOUNDRY ENDPOINT ==========
+        logger.info("🌐 Foundry Endpoint Configuration:")
         foundry_endpoint = f"https://{location}.models.ai.azure.com"
-        logger.info(f"✓ Endpoint: {foundry_endpoint}")
+        logger.info(f"   ✓ Region: {location}")
+        logger.info(f"   ✓ Endpoint: {foundry_endpoint}")
         
-        # Get key from environment or try to retrieve
+        # ========== API KEY ==========
+        logger.info("")
+        logger.info("🔑 Foundry API Key:")
         foundry_key = os.getenv("AZURE_FOUNDRY_KEY")
+        
         if foundry_key:
-            logger.info(f"✓ API Key from environment: {foundry_key[:10]}***")
+            logger.info(f"   ✓ API Key found in environment")
+            logger.info(f"   ✓ Key (masked): {foundry_key[:10]}***")
+            credentials['foundry_key'] = foundry_key
         else:
-            logger.info("ℹ️  API Key not in environment")
-            logger.info("   Get from Azure Portal → Foundry Hub → Project Settings → API Keys")
+            logger.warning("")
+            logger.warning("⚠️  AZURE_FOUNDRY_KEY not in environment!")
+            logger.warning("")
+            logger.warning("   TO GET YOUR API KEY:")
+            logger.warning("   1. Go to: https://ai.azure.com")
+            logger.warning("   2. Click 'Manage Resources' → 'Foundries'")
+            logger.warning("   3. Select your Hub: ai-agent-foundry-hub")
+            logger.warning("   4. Navigate to: Project Settings → API Keys")
+            logger.warning("   5. Copy the API key and add to GitHub secrets:")
+            logger.warning("      Settings → Secrets → New repository secret")
+            logger.warning("      Name: AZURE_FOUNDRY_KEY")
+            logger.warning("      Value: [paste your key]")
+            logger.warning("")
+            logger.warning("   The deployment will continue using Direct OpenAI fallback")
+        
+        # ========== HUB & PROJECT ==========
+        logger.info("")
+        logger.info("📦 Foundry Hub & Project:")
+        logger.info(f"   Hub Name: {hub_name}")
+        logger.info(f"   Project Name: {project_name}")
+        logger.info("")
+        logger.info("   IF THESE DON'T EXIST, CREATE THEM:")
+        logger.info("   1. Go to: https://ai.azure.com")
+        logger.info("   2. Click 'Build' → 'Create New Hub'")
+        logger.info(f"   3. Hub name: {hub_name}")
+        logger.info(f"   4. Location: {location}")
+        logger.info("   5. Click Create")
+        logger.info("   6. Create New Project in the Hub")
+        logger.info(f"   7. Project name: {project_name}")
         
         credentials['foundry_endpoint'] = foundry_endpoint
-        if foundry_key:
-            credentials['foundry_key'] = foundry_key
         
         logger.info("")
-        logger.info("✅ Foundry Setup Complete!")
+        logger.info("✅ Foundry Configuration Complete!")
         logger.info(f"   Hub: {hub_name}")
         logger.info(f"   Project: {project_name}")
         logger.info(f"   Endpoint: {foundry_endpoint}")
@@ -174,7 +105,7 @@ def main():
     logger.info("🚀 Azure AI Foundry Setup Script\n")
     
     try:
-        credentials = setup_foundry_via_rest()
+        credentials = setup_foundry_manually()
         
         # Export to GitHub Actions output
         if credentials:
