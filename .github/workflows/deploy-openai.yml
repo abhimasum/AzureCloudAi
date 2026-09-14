@@ -292,10 +292,10 @@ jobs:
           
           echo "✓ Purge sequence completed"
 
-      - name: Setup Direct OpenAI
-        id: openai
+      - name: Setup API Credentials (Direct OpenAI)
+        id: credentials
         run: |
-          echo "🤖 Using Direct OpenAI API (not Azure OpenAI)"
+          echo "🤖 Setting up Direct OpenAI API credentials"
           echo "✓ OpenAI API key configured"
           echo "key=${{ secrets.OPENAI_API_KEY }}" >> $GITHUB_OUTPUT
 
@@ -589,7 +589,7 @@ jobs:
           echo "  • Database: geography_index"
           echo "  • Containers: countries, states"
 
-  test-openai-integration:
+  test-model-integration:
     needs: provision-infrastructure
     runs-on: ubuntu-latest
     steps:
@@ -606,25 +606,25 @@ jobs:
           pip install openai pydantic -q
           echo "✓ Dependencies installed"
 
-      - name: Test OpenAI Integration
+      - name: Test Model Integration
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          echo "🧪 Testing OpenAI Integration..."
+          echo "🧪 Testing Model Integration..."
           echo ""
           python test_openai_local.py
           
           if [ $? -eq 0 ]; then
             echo ""
-            echo "✅ OpenAI integration test passed!"
+            echo "✅ Model integration test passed!"
           else
             echo ""
-            echo "❌ OpenAI integration test failed!"
+            echo "❌ Model integration test failed!"
             exit 1
           fi
 
   build-and-push-images:
-    needs: [provision-infrastructure, setup-database, test-openai-integration]
+    needs: [provision-infrastructure, setup-database, test-model-integration]
     runs-on: ubuntu-latest
     outputs:
       orchestrator_image: ${{ steps.images.outputs.orchestrator }}
