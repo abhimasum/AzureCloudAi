@@ -1041,21 +1041,30 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Get Storage Connection Details
-        id: storage
+      - name: Get Service Endpoint and Keys
+        id: services
         run: |
+          # Get Storage Account
           STORAGE_NAME=$(az storage account list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv)
           STORAGE_KEY=$(az storage account keys list --account-name $STORAGE_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].value" -o tsv)
+          
+          # Get Search Service
+          SEARCH_NAME=$(az search service list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          SEARCH_ENDPOINT="https://${SEARCH_NAME}.search.windows.net"
+          SEARCH_KEY=$(az search admin-key show --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --service-name $SEARCH_NAME --query primaryKey -o tsv)
+          
           echo "storage_account_name=$STORAGE_NAME" >> $GITHUB_OUTPUT
           echo "storage_account_key=$STORAGE_KEY" >> $GITHUB_OUTPUT
+          echo "search_endpoint=$SEARCH_ENDPOINT" >> $GITHUB_OUTPUT
+          echo "search_key=$SEARCH_KEY" >> $GITHUB_OUTPUT
 
       - name: Run Document Ingestion
         env:
-          AZURE_STORAGE_ACCOUNT_NAME: ${{ steps.storage.outputs.storage_account_name }}
-          AZURE_STORAGE_ACCOUNT_KEY: ${{ steps.storage.outputs.storage_account_key }}
+          AZURE_STORAGE_ACCOUNT_NAME: ${{ steps.services.outputs.storage_account_name }}
+          AZURE_STORAGE_ACCOUNT_KEY: ${{ steps.services.outputs.storage_account_key }}
           AZURE_STORAGE_CONTAINER: documents
-          AZURE_SEARCH_ENDPOINT: ${{ needs.provision-infrastructure.outputs.search_endpoint }}
-          AZURE_SEARCH_KEY: ${{ needs.provision-infrastructure.outputs.search_key }}
+          AZURE_SEARCH_ENDPOINT: ${{ steps.services.outputs.search_endpoint }}
+          AZURE_SEARCH_KEY: ${{ steps.services.outputs.search_key }}
           AZURE_SEARCH_INDEX: documents
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           USE_AZURE_FOUNDRY: ${{ env.USE_AZURE_FOUNDRY }}
@@ -1063,6 +1072,7 @@ jobs:
           AZURE_FOUNDRY_KEY: ${{ env.AZURE_FOUNDRY_KEY }}
         run: |
           echo "🔄 Running document ingestion..."
+          echo "Search Endpoint: $AZURE_SEARCH_ENDPOINT"
           cd ingestion
           python ingest.py
           echo "✓ Document ingestion completed"
