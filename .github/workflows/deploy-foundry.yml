@@ -1020,8 +1020,55 @@ jobs:
           
           echo "✓ Documents uploaded: india.md, states.md, districtandplace.md"
 
+  run-ingestion:
+    needs: [upload-documents, provision-infrastructure]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install Ingestion Dependencies
+        run: |
+          cd ingestion
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get Storage Connection Details
+        id: storage
+        run: |
+          STORAGE_NAME=$(az storage account list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv)
+          STORAGE_KEY=$(az storage account keys list --account-name $STORAGE_NAME --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].value" -o tsv)
+          echo "storage_account_name=$STORAGE_NAME" >> $GITHUB_OUTPUT
+          echo "storage_account_key=$STORAGE_KEY" >> $GITHUB_OUTPUT
+
+      - name: Run Document Ingestion
+        env:
+          AZURE_STORAGE_ACCOUNT_NAME: ${{ steps.storage.outputs.storage_account_name }}
+          AZURE_STORAGE_ACCOUNT_KEY: ${{ steps.storage.outputs.storage_account_key }}
+          AZURE_STORAGE_CONTAINER: documents
+          AZURE_SEARCH_ENDPOINT: ${{ needs.provision-infrastructure.outputs.search_endpoint }}
+          AZURE_SEARCH_KEY: ${{ needs.provision-infrastructure.outputs.search_key }}
+          AZURE_SEARCH_INDEX: documents
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          USE_AZURE_FOUNDRY: ${{ env.USE_AZURE_FOUNDRY }}
+          AZURE_FOUNDRY_ENDPOINT: ${{ env.AZURE_FOUNDRY_ENDPOINT }}
+          AZURE_FOUNDRY_KEY: ${{ env.AZURE_FOUNDRY_KEY }}
+        run: |
+          echo "🔄 Running document ingestion..."
+          cd ingestion
+          python ingest.py
+          echo "✓ Document ingestion completed"
+
   deployment-summary:
-    needs: [deploy-orchestrator, upload-documents]
+    needs: [deploy-orchestrator, upload-documents, run-ingestion]
     runs-on: ubuntu-latest
     steps:
       - name: Azure Login
